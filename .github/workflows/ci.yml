@@ -22,7 +22,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: complyrail-app/package-lock.json
-      - run: cd complyrail-app && npm ci
+      - run: cd complyrail-app && npm install --legacy-peer-deps
       - run: cd complyrail-sdk && npm ci && npm run build
       - run: cd complyrail-app && npm run type-check
       - run: cd complyrail-app && npm run lint
@@ -42,7 +42,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: complyrail-app/package-lock.json
-      - run: cd complyrail-app && npm ci
+      - run: cd complyrail-app && npm install --legacy-peer-deps
       - run: cd complyrail-sdk && npm ci && npm run build
       - run: cd complyrail-app && npm test -- --run
 
@@ -61,6 +61,6 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: complyrail-app/package-lock.json
-      - run: cd complyrail-app && npm ci
+      - run: cd complyrail-app && npm install --legacy-peer-deps
       - run: cd complyrail-sdk && npm ci && npm run build
       - run: cd complyrail-app && npm run build
