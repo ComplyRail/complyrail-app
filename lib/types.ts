@@ -20,6 +20,7 @@ export interface VaspEntry {
   publicKey: string
   status: VaspStatus
   addedAt: number
+  expiresAt?: number
 }
 
 export interface PaymentRecord {

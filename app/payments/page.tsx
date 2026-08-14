@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePayments } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { formatAddress } from '@/lib/mockData'
+import { PaymentStatus } from '@/lib/types'
 
 export default function PaymentsPage() {
   const { payments, loading, error } = usePayments()
@@ -30,9 +31,9 @@ export default function PaymentsPage() {
     )
   }
 
-  const pendingCount = payments.filter(p => p.status === 'Pending').length
-  const releasedCount = payments.filter(p => p.status === 'Released').length
-  const rejectedCount = payments.filter(p => p.status === 'Rejected').length
+  const pendingCount = payments.filter(p => p.status === PaymentStatus.Pending).length
+  const releasedCount = payments.filter(p => p.status === PaymentStatus.Released).length
+  const rejectedCount = payments.filter(p => p.status === PaymentStatus.Rejected).length
   const totalAmount = payments.reduce((sum, p) => sum + parseInt(p.amount), 0)
 
   return (
