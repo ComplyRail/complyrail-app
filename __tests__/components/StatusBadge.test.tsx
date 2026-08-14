@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import { StatusBadge } from '@/components/StatusBadge'
-import { VaspStatus, PaymentStatus } from 'complyrail-sdk'
+import { VaspStatus, PaymentStatus } from '@/lib/types'
 
 describe('StatusBadge', () => {
   it('renders VASP status badge', () => {

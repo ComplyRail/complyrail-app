@@ -1,6 +1,6 @@
 'use client'
 
-import { VaspStatus, PaymentStatus } from 'complyrail-sdk'
+import { VaspStatus, PaymentStatus } from '@/lib/types'
 
 interface StatusBadgeProps {
   status: VaspStatus | PaymentStatus | string

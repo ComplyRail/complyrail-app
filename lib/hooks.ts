@@ -1,8 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { VaspEntry, PaymentRecord } from 'complyrail-sdk'
-import { mockVasps, mockPayments, mockThresholds, getUserRole, mockAuditEvents, AuditEvent } from './mockData'
+import { VaspEntry, PaymentRecord, AuditEvent } from './types'
+import { mockVasps, mockPayments, mockThresholds, getUserRole, mockAuditEvents } from './mockData'
 import { client } from './sdk'
 
 export function useVasps() {

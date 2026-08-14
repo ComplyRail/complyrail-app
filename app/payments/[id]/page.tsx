@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { formatAddress, formatHash } from '@/lib/mockData'
-import { PaymentStatus } from 'complyrail-sdk'
+import { PaymentStatus } from '@/lib/types'
 
 export default function PaymentDetailPage({ params }: { params: { id: string } }) {
   const { payment, loading, error } = usePayment(params.id)

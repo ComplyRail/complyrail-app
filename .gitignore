@@ -34,3 +34,4 @@ coverage/
 # Database
 .env.db
 postgres/
+.vercel

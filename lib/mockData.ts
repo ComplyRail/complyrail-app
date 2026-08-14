@@ -1,4 +1,4 @@
-import { VaspEntry, VaspStatus, PaymentRecord, PaymentStatus } from 'complyrail-sdk'
+import { VaspEntry, VaspStatus, PaymentRecord, PaymentStatus, AuditEvent } from './types'
 
 export const mockVasps: VaspEntry[] = [
   {
@@ -96,15 +96,6 @@ export const mockThresholds = new Map([
   ['GBUQWP3BOUZX34SYMPHV3SH6MZLHEMGJLKJQPREXY63JBCGTAQON22TN:SG', 20000n],
   ['GBUQWP3BOUZX34SYMPHV3SH6MZLHEMGJLKJQPREXY63JBCGTAQON22TN:EU', 25000n],
 ])
-
-export interface AuditEvent {
-  id: string
-  timestamp: number
-  type: 'vasp_reg' | 'vasp_upd' | 'thr_set' | 'pay_sub' | 'att_sub' | 'pay_rel' | 'pay_rej'
-  actor: string
-  description: string
-  details?: Record<string, string>
-}
 
 export const mockAuditEvents: AuditEvent[] = [
   {
