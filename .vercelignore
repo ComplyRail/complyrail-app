@@ -1,0 +1,13 @@
+.env.local
+.env.*.local
+node_modules
+.git
+.gitignore
+README.md
+.eslintignore
+.next/cache
+coverage
+__tests__
+*.test.*
+vitest.config.ts
+vitest.setup.ts
