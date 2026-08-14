@@ -11,44 +11,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: complyrail-app
       - uses: actions/checkout@v4
         with:
           repository: ComplyRail/complyrail-sdk
-          path: ./complyrail-sdk
+          path: complyrail-sdk
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci
-      - run: npm run type-check
-      - run: npm run lint
+          cache-dependency-path: complyrail-app/package-lock.json
+      - run: cd complyrail-app && npm ci
+      - run: cd complyrail-app && npm run type-check
+      - run: cd complyrail-app && npm run lint
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: complyrail-app
       - uses: actions/checkout@v4
         with:
           repository: ComplyRail/complyrail-sdk
-          path: ./complyrail-sdk
+          path: complyrail-sdk
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci
-      - run: npm test
+          cache-dependency-path: complyrail-app/package-lock.json
+      - run: cd complyrail-app && npm ci
+      - run: cd complyrail-app && npm test
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: complyrail-app
       - uses: actions/checkout@v4
         with:
           repository: ComplyRail/complyrail-sdk
-          path: ./complyrail-sdk
+          path: complyrail-sdk
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci
-      - run: npm run build
+          cache-dependency-path: complyrail-app/package-lock.json
+      - run: cd complyrail-app && npm ci
+      - run: cd complyrail-app && npm run build
