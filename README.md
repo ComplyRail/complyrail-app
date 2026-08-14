@@ -2,6 +2,8 @@
 
 Compliance dashboard for ComplyRail — manage VASP registry, configure thresholds, review pending payments, and export audit logs.
 
+**🚀 [Live Demo](https://complyrail-app.vercel.app)** | [Documentation](./DEPLOYMENT.md) | [Testing Guide](./VERCEL_DEPLOYMENT.md)
+
 ## Features
 
 - **Wallet Auth**: Sign in with Stellar Wallets Kit (Freighter, xBull, Lobstr, etc.)
