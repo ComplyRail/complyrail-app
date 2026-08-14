@@ -30,6 +30,11 @@ export default function PaymentsPage() {
     )
   }
 
+  const pendingCount = payments.filter(p => p.status === 'Pending').length
+  const releasedCount = payments.filter(p => p.status === 'Released').length
+  const rejectedCount = payments.filter(p => p.status === 'Rejected').length
+  const totalAmount = payments.reduce((sum, p) => sum + parseInt(p.amount), 0)
+
   return (
     <div className="min-h-screen bg-background p-8">
       <div className="max-w-7xl mx-auto">
@@ -44,6 +49,26 @@ export default function PaymentsPage() {
           >
             Submit Payment
           </Link>
+        </div>
+
+        {/* Analytics */}
+        <div className="grid grid-cols-4 gap-4 mb-8">
+          <div className="bg-card border border-border rounded-lg p-4">
+            <div className="text-sm text-muted-foreground">Total Payments</div>
+            <div className="text-2xl font-bold">{payments.length}</div>
+          </div>
+          <div className="bg-card border border-border rounded-lg p-4">
+            <div className="text-sm text-muted-foreground">Pending</div>
+            <div className="text-2xl font-bold text-yellow-600">{pendingCount}</div>
+          </div>
+          <div className="bg-card border border-border rounded-lg p-4">
+            <div className="text-sm text-muted-foreground">Released</div>
+            <div className="text-2xl font-bold text-green-600">{releasedCount}</div>
+          </div>
+          <div className="bg-card border border-border rounded-lg p-4">
+            <div className="text-sm text-muted-foreground">Total Amount</div>
+            <div className="text-2xl font-bold">{totalAmount.toLocaleString()}</div>
+          </div>
         </div>
 
         <div className="bg-card border border-border rounded-lg overflow-hidden">

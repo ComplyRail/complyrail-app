@@ -3,6 +3,7 @@
 import { useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { formatAddress } from '@/lib/mockData'
+import { useState } from 'react'
 
 export default function VaspsPage() {
   const { vasps, loading, error } = useVasps()
@@ -46,23 +47,42 @@ export default function VaspsPage() {
                   <th className="px-6 py-3 text-left text-sm font-semibold">Address</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold">Jurisdiction</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold">Status</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Added</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold">Expires</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {vasps.map((vasp) => (
-                  <tr key={vasp.address} className="border-b border-border hover:bg-muted/50">
-                    <td className="px-6 py-4 font-medium">{vasp.name}</td>
-                    <td className="px-6 py-4 font-mono text-sm">{formatAddress(vasp.address)}</td>
-                    <td className="px-6 py-4">{vasp.jurisdiction}</td>
-                    <td className="px-6 py-4">
-                      <StatusBadge status={vasp.status} type="vasp" />
-                    </td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">
-                      {new Date(vasp.addedAt * 1000).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
+                {vasps.map((vasp) => {
+                  const isExpired = vasp.expiresAt && Date.now() / 1000 > vasp.expiresAt
+                  const expiresIn = vasp.expiresAt ? Math.ceil((vasp.expiresAt - Date.now() / 1000) / 86400) : null
+                  return (
+                    <tr key={vasp.address} className={`border-b border-border hover:bg-muted/50 ${isExpired ? 'bg-red-50' : ''}`}>
+                      <td className="px-6 py-4 font-medium">{vasp.name}</td>
+                      <td className="px-6 py-4 font-mono text-sm">{formatAddress(vasp.address)}</td>
+                      <td className="px-6 py-4">{vasp.jurisdiction}</td>
+                      <td className="px-6 py-4">
+                        <StatusBadge status={vasp.status} type="vasp" />
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        {vasp.expiresAt ? (
+                          <span className={isExpired ? 'text-red-600 font-semibold' : 'text-muted-foreground'}>
+                            {isExpired ? 'Expired' : expiresIn ? `${expiresIn}d remaining` : 'N/A'}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">No expiry</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <button
+                          className="px-3 py-1 bg-primary text-primary-foreground rounded text-xs hover:opacity-90"
+                          onClick={() => alert(`Renew registration for ${vasp.name}`)}
+                        >
+                          Renew
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -100,6 +100,17 @@ export default function Home() {
               </p>
             </Link>
 
+            <Link
+              href="/admin"
+              className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
+            >
+              <div className="text-4xl mb-4">👥</div>
+              <h3 className="text-xl font-semibold mb-2">Admin Panel</h3>
+              <p className="text-muted-foreground">
+                Manage administrators and approval settings
+              </p>
+            </Link>
+
             <div className="bg-card border border-border rounded-lg p-8">
               <div className="text-4xl mb-4">🔐</div>
               <h3 className="text-xl font-semibold mb-2">Security</h3>
