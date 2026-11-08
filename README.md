@@ -2,7 +2,7 @@
 
 Compliance dashboard for ComplyRail — manage VASP registry, configure thresholds, review pending payments, and export audit logs.
 
-**🚀 [Live Demo](https://complyrail-app.vercel.app)** | [Documentation](./DEPLOYMENT.md) | [Testing Guide](./VERCEL_DEPLOYMENT.md)
+**🚀 [Live Demo (testnet)](https://complyrail.github.io/complyrail-app/)** | [Documentation](./DEPLOYMENT.md) | [Testing Guide](./VERCEL_DEPLOYMENT.md)
 
 ## Features
 
@@ -22,6 +22,12 @@ The dashboard talks to the deployed contract directly via `@stellar/stellar-sdk`
 ### Deploying
 
 GitHub → **Actions** → **Deploy to testnet** → *Run workflow*, and paste your wallet's public `G…` address as the admin. The workflow deploys the contract and commits its ID to `contracts/deployments/testnet.json`, which the dashboard reads automatically.
+
+**Current testnet deployment:** [`CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q`](https://stellar.expert/explorer/testnet/contract/CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q)
+
+The dashboard is published to GitHub Pages on every push to `main` (`.github/workflows/pages.yml`).
+
+**Demo data:** **Actions** → **Seed testnet demo data** runs a full flow on-chain: two demo VASPs, thresholds, an instant settlement, an attest + release, a rejection and a pending payment. It needs a `TESTNET_ADMIN_SECRET` repository secret (the admin's testnet key).
 
 ### Try it on testnet
 
