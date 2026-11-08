@@ -42,7 +42,7 @@ export default function ContractPage() {
               {address && admin === address && <span className="ml-2 text-green-700">(you)</span>}
             </Row>
             <Row label="RPC">{config.rpcUrl}</Row>
-            {record.deployedAt && <Row label="Deployed">{new Date(record.deployedAt).toLocaleString()}</Row>}
+            {record.deployedAt && <Row label="Deployed">{record.deployedAt.replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')}</Row>}
             {record.wasmHash && <Row label="WASM sha256"><span className="font-mono break-all">{record.wasmHash}</span></Row>}
             {record.commit && (
               <Row label="Source commit">
