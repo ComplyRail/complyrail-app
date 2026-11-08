@@ -37,7 +37,7 @@ export default function NewPaymentPage() {
     }
     if (amount <= 0n) return setFormError('Amount must be greater than zero')
     const id = await tx.run('Payment submitted', s => submitPayment(s, { ...form, amount }))
-    if (id !== undefined) router.push(`/payments/${id}`)
+    if (id !== undefined) router.push(`/payments/view?id=${id}`)
   }
 
   return (
