@@ -2,7 +2,7 @@
 
 Compliance dashboard for ComplyRail — manage VASP registry, configure thresholds, review pending payments, and export audit logs.
 
-**🚀 [Live Demo (testnet)](https://complyrail.github.io/complyrail-app/)** | [Documentation](./DEPLOYMENT.md) | [Testing Guide](./VERCEL_DEPLOYMENT.md)
+**🚀 [Live Demo (testnet)](https://complyrail.github.io/complyrail-app/)** | [Deployment](./DEPLOYMENT.md) | [Contract docs](./contracts/README.md)
 
 ## Features
 

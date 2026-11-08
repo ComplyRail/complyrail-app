@@ -1,69 +1,56 @@
-# ComplyRail App Deployment
+# Deployment
 
-## Vercel Deployment
+ComplyRail has two parts that deploy independently: the Soroban contract (Stellar testnet) and the dashboard (GitHub Pages). Both are automated with GitHub Actions; no local tooling is needed.
 
-The ComplyRail app is configured for automatic deployment to Vercel.
+## 1. Contract → Stellar testnet
 
-### Prerequisites
+**Actions → Deploy to testnet → Run workflow**, then paste the admin wallet's **public** address (`G…`).
 
-- Vercel account (free tier available at https://vercel.com)
-- GitHub repository access
+The workflow (`.github/workflows/deploy-testnet.yml`):
 
-### One-Time Setup
+1. builds the contract with `stellar contract build`
+2. creates a throwaway deployer key and funds it with Friendbot
+3. deploys the contract; the constructor sets your address as admin, so no secret is ever needed
+4. checks that `admin()` returns your address
+5. commits the contract ID to `contracts/deployments/testnet.json`
 
-1. Visit https://vercel.com and sign up/log in
-2. Click "New Project"
-3. Import the `complyrail-app` repository from GitHub
-4. Vercel will auto-detect Next.js settings
-5. Click "Deploy"
+Current deployment: [`CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q`](https://stellar.expert/explorer/testnet/contract/CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q)
 
-### Environment Variables
+To deploy from your machine instead (needs the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) v25.2+):
 
-If needed, add environment variables in Vercel dashboard:
-- Project Settings → Environment Variables
-
-Common vars:
-- `NEXT_PUBLIC_STELLAR_NETWORK` - "testnet" or "public" (Stellar network)
-- `NEXT_PUBLIC_CONTRACT_ADDRESS` - Soroban contract address on Stellar
-
-### Automatic Deployments
-
-- **Preview**: Every PR gets a preview deployment
-- **Production**: Merges to `main` automatically deploy to production
-
-### Manual Deployment
-
-Push to `main` branch and Vercel will deploy automatically:
 ```bash
-git push origin main
+bash contracts/scripts/deploy-testnet.sh G...YOUR_ADMIN_ADDRESS
 ```
 
-### Monitoring
+## 2. Dashboard → GitHub Pages
 
-- View deployments at https://vercel.com/dashboard
-- Check build logs if deployment fails
-- Preview URLs available for each deployment
+Every push to `main` runs `.github/workflows/pages.yml`. It builds the Next.js app as a static export and publishes it to **https://complyrail.github.io/complyrail-app/**.
 
-### Troubleshooting
+The dashboard reads the contract ID from `contracts/deployments/testnet.json`, so a new contract deployment goes live on the site automatically. To use a different contract, set `NEXT_PUBLIC_CONTRACT_ID`.
 
-If build fails:
-1. Check Vercel build logs
-2. Ensure all dependencies are in package-lock.json locally
-3. Run `npm install` locally and verify build succeeds: `npm run build`
-4. Commit lock file changes and retry
+| Variable | Default |
+|---|---|
+| `NEXT_PUBLIC_CONTRACT_ID` | value in `contracts/deployments/testnet.json` |
+| `NEXT_PUBLIC_RPC_URL` | `https://soroban-testnet.stellar.org` |
+| `NEXT_PUBLIC_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` |
+| `NEXT_PUBLIC_BASE_PATH` | empty (set to `/complyrail-app` by the Pages workflow) |
 
-## Local Development
+## 3. Demo data (optional)
+
+**Actions → Seed testnet demo data** runs a full flow against the deployed contract:
+
+- registers two demo VASPs and sets XLM thresholds
+- submits four payments: one instant settlement, one attested and released, one rejected and refunded, one left pending
+
+It signs as the admin, so it needs a repository secret named `TESTNET_ADMIN_SECRET` that holds the admin's **testnet** secret key (Settings → Secrets and variables → Actions). Never use a mainnet key.
+
+## Local development
 
 ```bash
-npm install
-npm run dev
-```
+npm install --legacy-peer-deps
+npm run dev                 # http://localhost:3000
+npm test -- --run
+npm run type-check && npm run lint
 
-Visit http://localhost:3000
-
-## Production Build
-
-```bash
-npm run build
-npm start
+cd contracts/complyrail && cargo test
 ```
