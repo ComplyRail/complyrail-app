@@ -48,10 +48,10 @@ Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, 
 ```bash
 cd contracts/complyrail
 cargo test                                         # 19 unit tests
-cargo build --target wasm32v1-none --release       # or: stellar contract build
+stellar contract build                             # builds the WASM
 ```
 
-Requirements: Rust stable with `rustup target add wasm32v1-none`, and the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) for deploying.
+Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) v25.2+ (`soroban-sdk` 29 must be built with `stellar contract build`).
 
 ## Deploy to testnet
 
