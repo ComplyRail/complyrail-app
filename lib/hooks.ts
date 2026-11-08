@@ -1,144 +1,97 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { VaspEntry, PaymentRecord, AuditEvent } from './types'
-import { mockVasps, mockPayments, mockThresholds, getUserRole, mockAuditEvents } from './mockData'
-import { client } from './sdk'
+import { useCallback, useEffect, useState } from 'react'
+import * as api from './contract'
+import { isContractConfigured } from './config'
+import type { Role } from './rbac'
+import type { AuditEvent, PaymentRecord, ThresholdRow, VaspEntry } from './types'
 
-export function useVasps() {
-  const [vasps, setVasps] = useState<VaspEntry[]>([])
+interface AsyncState<T> {
+  data: T
+  loading: boolean
+  error: string | null
+  reload: () => void
+}
+
+/** Runs `fn` on mount and whenever `key` changes; exposes `reload` after writes. */
+function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string): AsyncState<T> {
+  const [data, setData] = useState<T>(initial)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [tick, setTick] = useState(0)
 
   useEffect(() => {
-    const fetchVasps = async () => {
-      try {
-        setLoading(true)
-        setVasps(mockVasps)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch VASPs')
-      } finally {
-        setLoading(false)
-      }
+    let cancelled = false
+    if (!isContractConfigured) {
+      setLoading(false)
+      return
     }
+    setLoading(true)
+    setError(null)
+    fn()
+      .then(d => !cancelled && setData(d))
+      .catch(e => !cancelled && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => !cancelled && setLoading(false))
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, tick])
 
-    fetchVasps()
-  }, [])
+  const reload = useCallback(() => setTick(t => t + 1), [])
+  return { data, loading, error, reload }
+}
 
-  return { vasps, loading, error }
+export function useVasps() {
+  const q = useContractQuery<VaspEntry[]>(api.listVasps, [], 'vasps')
+  return { vasps: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
 export function useVasp(address: string) {
-  const [vasp, setVasp] = useState<VaspEntry | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const fetchVasp = async () => {
-      try {
-        setLoading(true)
-        const found = mockVasps.find(v => v.address === address)
-        setVasp(found || null)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch VASP')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    if (address) fetchVasp()
-  }, [address])
-
-  return { vasp, loading, error }
+  const q = useContractQuery<VaspEntry | null>(
+    () => (address ? api.getVasp(address) : Promise.resolve(null)),
+    null,
+    `vasp:${address}`,
+  )
+  return { vasp: q.data, loading: q.loading, error: q.error }
 }
 
 export function usePayments() {
-  const [payments, setPayments] = useState<PaymentRecord[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const fetchPayments = async () => {
-      try {
-        setLoading(true)
-        setPayments(mockPayments)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch payments')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchPayments()
-  }, [])
-
-  return { payments, loading, error }
+  const q = useContractQuery<PaymentRecord[]>(() => api.listPayments(), [], 'payments')
+  return { payments: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
 export function usePayment(paymentId: string) {
-  const [payment, setPayment] = useState<PaymentRecord | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const fetchPayment = async () => {
-      try {
-        setLoading(true)
-        const found = mockPayments.find(p => p.id === paymentId)
-        setPayment(found || null)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch payment')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    if (paymentId) fetchPayment()
-  }, [paymentId])
-
-  return { payment, loading, error }
+  const q = useContractQuery<PaymentRecord | null>(() => api.getPayment(paymentId), null, `payment:${paymentId}`)
+  return { payment: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
 export function useThresholds() {
-  const [thresholds, setThresholds] = useState(mockThresholds)
-
-  return { thresholds }
-}
-
-export function useThreshold(asset: string, jurisdiction: string) {
-  const key = `${asset}:${jurisdiction}`
-  return mockThresholds.get(key)
+  const q = useContractQuery<ThresholdRow[]>(api.listThresholds, [], 'thresholds')
+  return { thresholds: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
 export function useAuditEvents() {
-  const [events, setEvents] = useState<AuditEvent[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const fetchEvents = async () => {
-      try {
-        setLoading(true)
-        setEvents(mockAuditEvents)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch audit events')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchEvents()
-  }, [])
-
-  return { events, loading, error }
+  const q = useContractQuery<AuditEvent[]>(api.listAuditEvents, [], 'events')
+  return { events: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
-export function useWalletUser(publicKey?: string) {
-  const [user, setUser] = useState(getUserRole(publicKey))
+export function useAdmin() {
+  const q = useContractQuery<string | null>(api.getAdmin, null, 'admin')
+  return { admin: q.data, loading: q.loading, error: q.error }
+}
 
-  useEffect(() => {
-    setUser(getUserRole(publicKey))
-  }, [publicKey])
-
-  return user
+/** Role of the connected wallet, derived from on-chain state. */
+export function useRole(address?: string): { role: Role; loading: boolean } {
+  const q = useContractQuery<Role>(
+    async () => {
+      if (!address) return 'viewer'
+      if ((await api.getAdmin()) === address) return 'admin'
+      const vasp = await api.getVasp(address)
+      return vasp ? 'vasp' : 'viewer'
+    },
+    'viewer',
+    `role:${address ?? ''}`,
+  )
+  return { role: q.data, loading: q.loading }
 }
