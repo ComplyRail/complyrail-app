@@ -1,0 +1,27 @@
+[package]
+name = "complyrail"
+version = "0.1.0"
+description = "On-chain FATF Travel Rule enforcement for Stellar anchors"
+license = "Apache-2.0"
+repository = "https://github.com/ComplyRail/complyrail-app"
+publish = false
+edition = "2021"
+
+[dependencies]
+soroban-sdk = "29.0.1"
+
+[dev-dependencies]
+soroban-sdk = { version = "29.0.1", features = ["testutils"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
