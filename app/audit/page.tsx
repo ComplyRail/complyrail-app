@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { useAuditEvents } from '@/lib/hooks'
-import { formatAddress } from '@/lib/mockData'
+import { formatAddress } from '@/lib/format'
+import { ExplorerLink } from '@/components/Notice'
 
 const EVENT_TYPES = [
   { value: 'vasp_reg', label: 'VASP Registration' },
@@ -15,7 +16,7 @@ const EVENT_TYPES = [
 ]
 
 export default function AuditLogPage() {
-  const { events, loading, error } = useAuditEvents()
+  const { events, loading, error, reload } = useAuditEvents()
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
 
   const filteredEvents = selectedTypes.length > 0
@@ -32,13 +33,16 @@ export default function AuditLogPage() {
 
   const exportCSV = () => {
     const csv = [
-      ['ID', 'Timestamp', 'Type', 'Actor', 'Description'],
+      ['ID', 'Timestamp', 'Ledger', 'Tx hash', 'Type', 'Subject', 'Description', 'Details'],
       ...filteredEvents.map(e => [
         e.id,
         new Date(e.timestamp * 1000).toISOString(),
+        String(e.ledger),
+        e.txHash,
         e.type,
-        e.actor,
+        e.subject,
         e.description,
+        JSON.stringify(e.details ?? {}).replace(/"/g, "'"),
       ]),
     ]
     const csvContent = csv.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
@@ -48,6 +52,7 @@ export default function AuditLogPage() {
     a.href = url
     a.download = `audit-log-${Date.now()}.csv`
     a.click()
+    window.URL.revokeObjectURL(url)
   }
 
   const exportJSON = () => {
@@ -87,7 +92,10 @@ export default function AuditLogPage() {
       <div className="max-w-6xl mx-auto">
         <div className="mb-8">
           <h1 className="text-3xl font-bold">Audit Log</h1>
-          <p className="text-muted-foreground">Contract events and compliance history</p>
+          <p className="text-muted-foreground">
+            Live contract events from Stellar RPC (about the last 7 days).{' '}
+            <button onClick={reload} className="text-primary hover:underline">Refresh</button>
+          </p>
         </div>
 
         <div className="mb-8 bg-card border border-border rounded-lg p-6">
@@ -128,8 +136,9 @@ export default function AuditLogPage() {
                 <tr className="border-b border-border bg-muted/50">
                   <th className="px-6 py-3 text-left text-sm font-semibold">Timestamp</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold">Type</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Actor</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold">Subject</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold">Description</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold">Tx</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,8 +152,20 @@ export default function AuditLogPage() {
                         {event.type}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm font-mono">{formatAddress(event.actor)}</td>
-                    <td className="px-6 py-4 text-sm">{event.description}</td>
+                    <td className="px-6 py-4 text-sm font-mono">
+                      {/^\d+$/.test(event.subject) ? `#${event.subject}` : formatAddress(event.subject)}
+                    </td>
+                    <td className="px-6 py-4 text-sm">
+                      {event.description}
+                      {event.details && Object.keys(event.details).length > 0 && (
+                        <div className="text-xs text-muted-foreground">
+                          {Object.entries(event.details).map(([k, v]) => `${k}: ${v.length > 20 ? formatAddress(v) : v}`).join(' · ')}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm font-mono">
+                      <ExplorerLink kind="tx" id={event.txHash}>{event.txHash.slice(0, 8)}</ExplorerLink>
+                    </td>
                   </tr>
                 ))}
               </tbody>
