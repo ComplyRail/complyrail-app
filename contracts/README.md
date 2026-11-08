@@ -64,7 +64,7 @@ Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar C
 bash contracts/scripts/deploy-testnet.sh G...YOUR_ADMIN_ADDRESS
 ```
 
-Then set `NEXT_PUBLIC_CONTRACT_ID` for the dashboard (in `.env.local`, or in Vercel's environment variables).
+Then set `NEXT_PUBLIC_CONTRACT_ID` for the dashboard (in `.env.local`). The GitHub Pages site reads `contracts/deployments/testnet.json` automatically.
 
 ## Status
 
