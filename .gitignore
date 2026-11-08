@@ -35,3 +35,7 @@ coverage/
 .env.db
 postgres/
 .vercel
+
+# Rust / Soroban
+contracts/**/target/
+contracts/**/test_snapshots/

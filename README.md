@@ -13,6 +13,12 @@ Compliance dashboard for ComplyRail — manage VASP registry, configure threshol
 - **Audit Log**: Export transaction history as CSV or JSON with on-chain verification links
 - **Role-Based Access**: Admin, Compliance Officer, Viewer roles
 
+## Smart Contract
+
+The Soroban contract lives in [`contracts/`](contracts/README.md): VASP registry, per-asset/jurisdiction thresholds, payment escrow and IVMS101 attestation hashes, with 19 unit tests and CI.
+
+> **Current status:** the contract is complete and tested. The dashboard still uses a mock client (`lib/sdk.ts`, `lib/mockData.ts`). Wiring it to the deployed testnet contract is the next milestone; see the roadmap in `contracts/README.md`.
+
 ## Tech Stack
 
 - Next.js 14+ (App Router)
@@ -21,6 +27,7 @@ Compliance dashboard for ComplyRail — manage VASP registry, configure threshol
 - shadcn/ui
 - Stellar Wallets Kit
 - Prisma + Postgres (indexer)
+- Soroban smart contract (Rust, `soroban-sdk` 29)
 
 ## License
 
