@@ -1,0 +1,29 @@
+name: Seed testnet demo data
+
+# Runs a full demo flow against the deployed testnet contract:
+# registers two demo VASPs, sets thresholds and submits four payments
+# (instant settle, attest + release, reject, pending).
+#
+# One-time setup: Settings -> Secrets and variables -> Actions ->
+# New repository secret named TESTNET_ADMIN_SECRET = the admin's S... key.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm install --legacy-peer-deps
+      - name: Seed
+        env:
+          TESTNET_ADMIN_SECRET: ${{ secrets.TESTNET_ADMIN_SECRET }}
+        run: node scripts/seed-testnet.mjs
