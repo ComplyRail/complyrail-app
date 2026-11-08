@@ -39,3 +39,6 @@ postgres/
 # Rust / Soroban
 contracts/**/target/
 contracts/**/test_snapshots/
+
+# TypeScript build cache
+*.tsbuildinfo
