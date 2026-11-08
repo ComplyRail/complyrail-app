@@ -30,8 +30,9 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+      - uses: stellar/stellar-cli@v30.0.1
       - name: Build WASM
-        run: cargo build --target wasm32v1-none --release
+        run: stellar contract build
       - uses: actions/upload-artifact@v4
         with:
           name: complyrail-wasm
