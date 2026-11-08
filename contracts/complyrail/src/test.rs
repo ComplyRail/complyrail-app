@@ -41,9 +41,8 @@ fn setup<'a>() -> Setup<'a> {
     StellarAssetClient::new(&env, &token_addr).mint(&vasp_a, &1_000_000);
     let token = TokenClient::new(&env, &token_addr);
 
-    let id = env.register(ComplyRail, ());
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
     let client = ComplyRailClient::new(&env, &id);
-    client.initialize(&admin, &None);
     client.register_vasp(
         &vasp_a,
         &s(&env, "Acme Exchange"),
@@ -80,10 +79,21 @@ fn initialize_sets_admin() {
 }
 
 #[test]
-fn initialize_twice_fails() {
-    let t = setup();
-    let r = t.client.try_initialize(&t.admin, &None);
-    assert_eq!(r, Err(Ok(Error::AlreadyInitialized)));
+fn constructor_respects_custom_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(500);
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
+    let id = env.register(ComplyRail, (admin.clone(), Some(60u64)));
+    let c = ComplyRailClient::new(&env, &id);
+    c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
+    c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
+    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
+    assert_eq!(c.get_payment(&pid).expires_at, 560);
 }
 
 #[test]
@@ -158,11 +168,9 @@ fn expired_vasp_is_inactive() {
 fn register_requires_admin_auth() {
     let env = Env::default();
     let admin = Address::generate(&env);
-    let id = env.register(ComplyRail, ());
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    // no mock_all_auths(): admin has not signed
     let client = ComplyRailClient::new(&env, &id);
-    env.mock_all_auths();
-    client.initialize(&admin, &None);
-    env.set_auths(&[]); // no signatures from now on
     client.register_vasp(
         &Address::generate(&env),
         &s(&env, "x"),
