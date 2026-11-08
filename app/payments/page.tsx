@@ -59,7 +59,7 @@ export default function PaymentsPage() {
                   {payments.map(p => (
                     <tr key={p.id} className="border-b border-border hover:bg-muted/50">
                       <td className="px-6 py-4 font-mono text-sm">
-                        <Link href={`/payments/${p.id}`} className="text-primary hover:underline">#{p.id}</Link>
+                        <Link href={`/payments/view?id=${p.id}`} className="text-primary hover:underline">#{p.id}</Link>
                       </td>
                       <td className="px-6 py-4 font-mono text-sm">{formatAddress(p.fromVasp)}</td>
                       <td className="px-6 py-4 font-mono text-sm">{formatAddress(p.toVasp)}</td>
