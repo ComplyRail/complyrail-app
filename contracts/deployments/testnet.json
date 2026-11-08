@@ -1,6 +1,8 @@
 {
   "network": "testnet",
-  "contractId": "",
-  "admin": "",
-  "note": "Filled in automatically by the 'Deploy to testnet' GitHub Action."
+  "contractId": "CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q",
+  "admin": "GA6JI6VEVOOJLX3H5YVYTCBCBFABO3TZ63MKIBXUAQ6SCEKDXE36B4SX",
+  "wasmHash": "b48f51ffcec60282ff5021dba882184f97a691c7d0e78f0c3113993aacadec20",
+  "commit": "1ce3f08ca22787304249e42c2f06139d277701b9",
+  "deployedAt": "2026-11-08T19:33:14Z"
 }
