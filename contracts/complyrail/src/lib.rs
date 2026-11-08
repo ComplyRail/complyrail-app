@@ -40,6 +40,7 @@ const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// Reserved (unused since setup moved to the constructor).
     AlreadyInitialized = 1,
     NotInitialized = 2,
     VaspAlreadyRegistered = 3,
@@ -306,13 +307,11 @@ pub struct PaymentRejected {
 
 #[contractimpl]
 impl ComplyRail {
-    /// One-time setup. `payment_ttl` is how long (seconds) a held payment can
-    /// wait before the originator may reclaim it; pass `None` for 7 days.
-    pub fn initialize(env: Env, admin: Address, payment_ttl: Option<u64>) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-        admin.require_auth();
+    /// Runs once, atomically with deployment, so nobody can front-run setup.
+    /// `admin` does not need to sign: the deployer chooses it.
+    /// `payment_ttl` is how long (seconds) a held payment can wait before the
+    /// originator may reclaim it; pass `None` for 7 days.
+    pub fn __constructor(env: Env, admin: Address, payment_ttl: Option<u64>) {
         let s = env.storage().instance();
         s.set(&DataKey::Admin, &admin);
         s.set(
@@ -322,7 +321,6 @@ impl ComplyRail {
         s.set(&DataKey::NextPaymentId, &0u64);
         s.set(&DataKey::VaspList, &Vec::<Address>::new(&env));
         bump_instance(&env);
-        Ok(())
     }
 
     pub fn admin(env: Env) -> Result<Address, Error> {

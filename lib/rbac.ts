@@ -1,4 +1,4 @@
-type Role = 'admin' | 'vasp' | 'viewer'
+export type Role = 'admin' | 'vasp' | 'viewer'
 
 export interface Permission {
   canRegisterVasp: boolean

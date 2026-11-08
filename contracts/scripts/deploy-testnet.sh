@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Build, deploy and initialise the ComplyRail contract on Stellar testnet.
+# Build and deploy the ComplyRail contract to Stellar testnet.
 #
-# Requires the Stellar CLI: https://developers.stellar.org/docs/tools/cli
-# Usage:  bash contracts/scripts/deploy-testnet.sh [identity-name]
+# Requires the Stellar CLI (v25.2+): https://developers.stellar.org/docs/tools/cli
+# Usage:  bash contracts/scripts/deploy-testnet.sh <ADMIN_G_ADDRESS> [deployer-identity]
+#
+# The admin is set by the contract constructor at deploy time, so it does not
+# need to sign. Use your wallet's public address (Freighter, xBull, ...).
 set -euo pipefail
 
-IDENTITY="${1:-complyrail-admin}"
+ADMIN="${1:?usage: deploy-testnet.sh <ADMIN_G_ADDRESS> [deployer-identity]}"
+DEPLOYER="${2:-complyrail-deployer}"
 NETWORK="testnet"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WASM="$ROOT/complyrail/target/wasm32v1-none/release/complyrail.wasm"
@@ -13,27 +17,24 @@ WASM="$ROOT/complyrail/target/wasm32v1-none/release/complyrail.wasm"
 echo "==> Building contract"
 (cd "$ROOT/complyrail" && stellar contract build)
 
-if ! stellar keys address "$IDENTITY" >/dev/null 2>&1; then
-  echo "==> Creating and funding identity '$IDENTITY'"
-  stellar keys generate "$IDENTITY" --network "$NETWORK" --fund
+if ! stellar keys address "$DEPLOYER" >/dev/null 2>&1; then
+  echo "==> Creating and funding deployer identity '$DEPLOYER'"
+  stellar keys generate "$DEPLOYER" --network "$NETWORK" --fund
 fi
-ADMIN="$(stellar keys address "$IDENTITY")"
 
-echo "==> Deploying"
-CONTRACT_ID="$(stellar contract deploy --wasm "$WASM" --source "$IDENTITY" --network "$NETWORK")"
+echo "==> Deploying (admin: $ADMIN)"
+CONTRACT_ID="$(stellar contract deploy --wasm "$WASM" --source "$DEPLOYER" --network "$NETWORK" \
+  -- --admin "$ADMIN")"
 
-echo "==> Initialising (admin: $ADMIN)"
-stellar contract invoke --id "$CONTRACT_ID" --source "$IDENTITY" --network "$NETWORK" \
-  -- initialize --admin "$ADMIN"
-
-cat <<EOF
+cat <<OUT
 
 Deployed ComplyRail to $NETWORK
   Contract ID: $CONTRACT_ID
   Admin:       $ADMIN
+  Explorer:    https://stellar.expert/explorer/testnet/contract/$CONTRACT_ID
 
-Add to the dashboard's .env.local:
+Dashboard env (.env.local or Vercel):
   NEXT_PUBLIC_CONTRACT_ID=$CONTRACT_ID
-  NEXT_PUBLIC_RPC_URL=https://soroban-testnet.stellar.org:443
+  NEXT_PUBLIC_RPC_URL=https://soroban-testnet.stellar.org
   NEXT_PUBLIC_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
-EOF
+OUT

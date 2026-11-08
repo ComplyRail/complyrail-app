@@ -1,0 +1,99 @@
+name: Deploy to testnet
+
+# Manual, one-click deployment of the ComplyRail contract to Stellar testnet.
+# Actions -> "Deploy to testnet" -> Run workflow -> paste your wallet's public
+# G... address. No secrets needed: a throwaway deployer key is generated and
+# funded by Friendbot; the admin is set by the contract constructor.
+
+on:
+  workflow_dispatch:
+    inputs:
+      admin:
+        description: "Admin wallet PUBLIC address (G...)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-testnet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      ADMIN: ${{ inputs.admin }}
+    steps:
+      - name: Validate admin address
+        run: |
+          if [[ ! "$ADMIN" =~ ^G[A-Z2-7]{55}$ ]]; then
+            echo "::error::admin must be a Stellar public key (56 chars, starts with G). Never paste a secret key (S...)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/complyrail
+      - uses: stellar/stellar-cli@v30.0.1
+
+      - name: Build
+        working-directory: contracts/complyrail
+        run: stellar contract build
+
+      - name: Create and fund throwaway deployer
+        run: stellar keys generate deployer --network testnet --fund
+
+      - name: Deploy
+        id: deploy
+        run: |
+          WASM=contracts/complyrail/target/wasm32v1-none/release/complyrail.wasm
+          CONTRACT_ID="$(stellar contract deploy --wasm "$WASM" --source deployer --network testnet -- --admin "$ADMIN")"
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+          echo "Deployed: $CONTRACT_ID"
+
+      - name: Smoke test
+        env:
+          CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
+        run: |
+          ONCHAIN_ADMIN="$(stellar contract invoke --id "$CONTRACT_ID" --source deployer --network testnet --send=no -- admin | tr -d '"')"
+          test "$ONCHAIN_ADMIN" = "$ADMIN"
+          echo "admin() returned $ONCHAIN_ADMIN"
+
+      - name: Record deployment
+        env:
+          CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
+        run: |
+          mkdir -p contracts/deployments
+          cat > contracts/deployments/testnet.json <<EOF
+          {
+            "network": "testnet",
+            "contractId": "$CONTRACT_ID",
+            "admin": "$ADMIN",
+            "wasmHash": "$(sha256sum contracts/complyrail/target/wasm32v1-none/release/complyrail.wasm | cut -d' ' -f1)",
+            "commit": "$GITHUB_SHA",
+            "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add contracts/deployments/testnet.json
+          git commit -m "chore(deploy): record testnet deployment $CONTRACT_ID"
+          git push
+
+          {
+            echo "## Deployed to testnet"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Contract ID | \`$CONTRACT_ID\` |"
+            echo "| Admin | \`$ADMIN\` |"
+            echo "| Explorer | https://stellar.expert/explorer/testnet/contract/$CONTRACT_ID |"
+            echo ""
+            echo "Recorded in \`contracts/deployments/testnet.json\`; the dashboard reads it automatically."
+          } >> "$GITHUB_STEP_SUMMARY"

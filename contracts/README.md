@@ -27,7 +27,7 @@ originator VASP                     contract                      beneficiary VA
 
 | Function | Auth | Notes |
 |---|---|---|
-| `initialize(admin, payment_ttl?)` | admin | one time; TTL defaults to 7 days |
+| `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days |
 | `transfer_admin(new_admin)` | admin + new admin | |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
@@ -47,7 +47,7 @@ Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, 
 
 ```bash
 cd contracts/complyrail
-cargo test                                         # 19 unit tests
+cargo test                                         # unit tests
 stellar contract build                             # builds the WASM
 ```
 
@@ -56,18 +56,24 @@ Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar C
 ## Deploy to testnet
 
 ```bash
-bash contracts/scripts/deploy-testnet.sh
+**One click (no local setup):** GitHub → Actions → **Deploy to testnet** → *Run workflow*, and paste your wallet's public `G…` address as the admin. The job builds the contract, deploys it from a throwaway Friendbot-funded key, and writes the contract ID to the run summary.
+
+**Locally** (needs the Stellar CLI):
+
+```bash
+bash contracts/scripts/deploy-testnet.sh G...YOUR_ADMIN_ADDRESS
 ```
 
-The script builds the contract, funds a `complyrail-admin` identity with Friendbot, deploys it, calls `initialize`, and prints the env vars for the dashboard.
+Then set `NEXT_PUBLIC_CONTRACT_ID` for the dashboard (in `.env.local`, or in Vercel's environment variables).
 
 ## Status
 
 - [x] Contract with registry, thresholds, escrow and attestations
 - [x] Unit tests and CI (fmt, clippy, test, WASM build)
-- [ ] Testnet deployment, with the contract ID published here
-- [ ] Generated TypeScript bindings; replace the mock client in `lib/sdk.ts`
-- [ ] Event indexer feeding the dashboard audit log
+- [x] One-click testnet deploy workflow (records the ID in `deployments/testnet.json`)
+- [x] Dashboard wired to the contract (no mocks)
+- [ ] Persistent event indexer (RPC only keeps about 7 days of events)
+- [ ] Off-chain IVMS101 exchange between VASPs (TRP / encrypted channel)
 - [ ] Independent security review before any mainnet use
 
 > ComplyRail is a technical tool, not legal advice. Travel Rule obligations vary by jurisdiction.

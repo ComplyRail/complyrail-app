@@ -1,30 +1,15 @@
 'use client'
 
 import Link from 'next/link'
-import { Header } from '@/components/Header'
-import { useState } from 'react'
-import { useWalletUser } from '@/lib/hooks'
+import { useWallet } from '@/components/WalletProvider'
+import { useRole } from '@/lib/hooks'
 
 export default function Home() {
-  const [connectedAddress, setConnectedAddress] = useState<string | undefined>()
-  const user = useWalletUser(connectedAddress)
-
-  const handleConnect = () => {
-    // Mock wallet connection
-    setConnectedAddress('GABC123DEFGHIJKLMNOPQRSTUVWXYZ')
-  }
-
-  const handleDisconnect = () => {
-    setConnectedAddress(undefined)
-  }
+  const { address: connectedAddress, connect: handleConnect } = useWallet()
+  const { role } = useRole(connectedAddress)
 
   return (
     <>
-      <Header
-        connectedAddress={connectedAddress}
-        onConnect={handleConnect}
-        onDisconnect={handleDisconnect}
-      />
       <div className="min-h-screen bg-gradient-to-br from-background to-muted">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
           <div className="text-center mb-16">
@@ -105,9 +90,9 @@ export default function Home() {
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
               <div className="text-4xl mb-4">👥</div>
-              <h3 className="text-xl font-semibold mb-2">Admin Panel</h3>
+              <h3 className="text-xl font-semibold mb-2">Contract</h3>
               <p className="text-muted-foreground">
-                Manage administrators and approval settings
+                Deployment details, admin and VASP registration
               </p>
             </Link>
 
@@ -116,7 +101,7 @@ export default function Home() {
               <h3 className="text-xl font-semibold mb-2">Security</h3>
               <p className="text-muted-foreground">
                 {connectedAddress
-                  ? `Connected as ${connectedAddress.slice(0, 10)}... (${user?.role || 'viewer'})`
+                  ? `Connected as ${connectedAddress.slice(0, 10)}... (${role})`
                   : 'Connect wallet to authenticate'}
               </p>
             </div>
