@@ -115,8 +115,12 @@ pub struct Payment {
     pub ivms_version: Option<String>,
     pub attested_at: Option<u64>,
     pub created_at: u64,
+    /// Ledger sequence at submission, for ordering events against the ledger.
+    pub created_ledger: u32,
     pub expires_at: u64,
     pub resolved_at: Option<u64>,
+    /// Ledger sequence at release, rejection or reclaim.
+    pub resolved_ledger: Option<u32>,
 }
 
 #[contracttype]
@@ -261,6 +265,7 @@ fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     }
     p.status = status;
     p.resolved_at = Some(env.ledger().timestamp());
+    p.resolved_ledger = Some(env.ledger().sequence());
     save_payment(env, p);
 }
 
@@ -303,6 +308,7 @@ pub struct PaymentSubmitted {
     pub to_vasp: Address,
     pub amount: i128,
     pub requires_attestation: bool,
+    pub created_ledger: u32,
 }
 
 #[contractevent(topics = ["att_sub"])]
@@ -320,6 +326,7 @@ pub struct PaymentReleased {
     #[topic]
     pub id: u64,
     pub amount: i128,
+    pub resolved_ledger: u32,
 }
 
 #[contractevent(topics = ["pay_rej"])]
@@ -328,6 +335,7 @@ pub struct PaymentRejected {
     #[topic]
     pub id: u64,
     pub reason: String,
+    pub resolved_ledger: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -592,8 +600,10 @@ impl ComplyRail {
             ivms_version: None,
             attested_at: None,
             created_at: now,
+            created_ledger: env.ledger().sequence(),
             expires_at: now + ttl,
             resolved_at: None,
+            resolved_ledger: None,
         };
 
         PaymentSubmitted {
@@ -602,6 +612,7 @@ impl ComplyRail {
             to_vasp,
             amount,
             requires_attestation,
+            created_ledger: env.ledger().sequence(),
         }
         .publish(&env);
 
@@ -611,7 +622,12 @@ impl ComplyRail {
             save_payment(&env, &p);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released);
-            PaymentReleased { id, amount }.publish(&env);
+            PaymentReleased {
+                id,
+                amount,
+                resolved_ledger: env.ledger().sequence(),
+            }
+            .publish(&env);
         }
         Ok(id)
     }
@@ -660,6 +676,7 @@ impl ComplyRail {
         PaymentReleased {
             id: payment_id,
             amount: p.amount,
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
@@ -684,6 +701,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason,
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
@@ -703,6 +721,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
@@ -724,6 +743,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "receiver_inactive"),
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
@@ -765,6 +785,7 @@ impl ComplyRail {
                     PaymentRejected {
                         id,
                         reason: String::from_str(&env, "receiver_inactive"),
+                        resolved_ledger: env.ledger().sequence(),
                     }
                     .publish(&env);
                 }

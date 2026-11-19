@@ -547,3 +547,39 @@ fn negative_exposure_cap_rejected() {
     assert_eq!(r, Err(Ok(Error::InvalidAmount)));
     assert_eq!(t.client.get_exposure_cap(&t.vasp_a, &token), None);
 }
+
+// ----- ledger sequence on payments (issue #35) ----------------------------
+
+#[test]
+fn payments_record_created_and_resolved_ledger() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.env.ledger().set_sequence_number(500);
+    let held = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000);
+    let p = t.client.get_payment(&held);
+    assert_eq!(p.created_ledger, 500);
+    assert_eq!(p.resolved_ledger, None);
+
+    t.env.ledger().set_sequence_number(525);
+    t.client
+        .reject_payment(&held, &t.vasp_b, &s(&t.env, "no"));
+    let p = t.client.get_payment(&held);
+    assert_eq!(p.resolved_ledger, Some(525));
+    assert_eq!(p.created_ledger, 500);
+}
+
+#[test]
+fn immediate_settlement_records_both_ledgers() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.env.ledger().set_sequence_number(900);
+    let id = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &100);
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Released);
+    assert_eq!(p.created_ledger, 900);
+    assert_eq!(p.resolved_ledger, Some(900));
+}
