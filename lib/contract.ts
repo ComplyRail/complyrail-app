@@ -265,6 +265,20 @@ export async function listAuditEvents(): Promise<AuditEvent[]> {
     .reverse()
 }
 
+/**
+ * Balance of `owner` for a Stellar Asset Contract, in integer units. Read-only:
+ * simulates the SAC `balance` method, so nothing is signed.
+ */
+export async function getAssetBalance(asset: string, owner: string): Promise<bigint> {
+  const sac = (await contract.Client.from({
+    contractId: asset,
+    rpcUrl: config.rpcUrl,
+    networkPassphrase: config.networkPassphrase,
+  })) as AnyClient
+  const tx = await sac.balance({ id: owner })
+  return BigInt(unwrap<bigint | number | string>(tx.result))
+}
+
 // ----- writes --------------------------------------------------------------
 
 export function registerVasp(

@@ -33,6 +33,11 @@ export function fromUnits(units: bigint | string, decimals = ASSET_DECIMALS): st
   return `${neg ? '-' : ''}${whole.toLocaleString('en-US')}${frac ? '.' + frac : ''}`
 }
 
+/** True when a requested amount is larger than the available balance. Unknown balance never blocks. */
+export function exceedsBalance(amount: bigint, balance: bigint | null): boolean {
+  return balance !== null && amount > balance
+}
+
 export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }
