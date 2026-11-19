@@ -16,7 +16,7 @@ const EVENT_TYPES = [
 ]
 
 export default function AuditLogPage() {
-  const { events, loading, error, reload } = useAuditEvents()
+  const { events, truncated, loading, error, reload } = useAuditEvents()
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
 
   const filteredEvents = selectedTypes.length > 0
@@ -97,6 +97,12 @@ export default function AuditLogPage() {
             <button onClick={reload} className="text-primary hover:underline">Refresh</button>
           </p>
         </div>
+
+        {truncated && (
+          <div role="status" className="mb-8 rounded-lg border border-yellow-500 bg-yellow-50 p-4 text-sm text-yellow-900">
+            Showing the newest {events.length} events. The log has more events in this window that were not loaded.
+          </div>
+        )}
 
         <div className="mb-8 bg-card border border-border rounded-lg p-6">
           <h2 className="text-lg font-semibold mb-4">Filters</h2>

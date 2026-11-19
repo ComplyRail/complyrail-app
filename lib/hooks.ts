@@ -72,8 +72,18 @@ export function useThresholds() {
 }
 
 export function useAuditEvents() {
-  const q = useContractQuery<AuditEvent[]>(api.listAuditEvents, [], 'events')
-  return { events: q.data, loading: q.loading, error: q.error, reload: q.reload }
+  const q = useContractQuery<api.AuditEventsResult>(
+    api.listAuditEvents,
+    { events: [], truncated: false },
+    'events',
+  )
+  return {
+    events: q.data.events,
+    truncated: q.data.truncated,
+    loading: q.loading,
+    error: q.error,
+    reload: q.reload,
+  }
 }
 
 export function useAdmin() {

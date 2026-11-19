@@ -250,24 +250,51 @@ export async function listThresholds(): Promise<ThresholdRow[]> {
     .filter(r => r.amount > 0n)
 }
 
+export interface AuditEventsResult {
+  /** Newest first. */
+  events: AuditEvent[]
+  /** True when the page cap was reached before the window was exhausted; older events are missing. */
+  truncated: boolean
+}
+
+/** RPC page size for getEvents (the RPC maximum). */
+export const AUDIT_PAGE_SIZE = 1000
+/** Stop following cursors after this many pages (10,000 events). */
+export const AUDIT_MAX_PAGES = 10
+
+/**
+ * Follows getEvents cursors from `startLedger` until a short page (window exhausted)
+ * or `AUDIT_MAX_PAGES` full pages (truncated). The RPC rejects startLedger alongside
+ * a cursor, so only the first request sets it.
+ */
+export async function fetchAllContractEvents(
+  server: Pick<rpc.Server, 'getEvents'>,
+  contractId: string,
+  startLedger: number,
+): Promise<{ events: rpc.Api.EventResponse[]; truncated: boolean }> {
+  const filters = [{ type: 'contract' as const, contractIds: [contractId] }]
+  const events: rpc.Api.EventResponse[] = []
+  let res = await server.getEvents({ startLedger, filters, limit: AUDIT_PAGE_SIZE })
+  for (let page = 1; ; page++) {
+    events.push(...res.events)
+    if (res.events.length < AUDIT_PAGE_SIZE) return { events, truncated: false }
+    if (page >= AUDIT_MAX_PAGES) return { events, truncated: true }
+    res = await server.getEvents({ cursor: res.cursor, filters, limit: AUDIT_PAGE_SIZE })
+  }
+}
+
 /** Contract events from the RPC's retention window (about 7 days on testnet). */
-export async function listAuditEvents(): Promise<AuditEvent[]> {
+export async function listAuditEvents(): Promise<AuditEventsResult> {
   assertConfigured()
   const server = new rpc.Server(config.rpcUrl)
   const latest = (await server.getLatestLedger()).sequence
-  const fetchFrom = (startLedger: number) =>
-    server.getEvents({
-      startLedger,
-      filters: [{ type: 'contract', contractIds: [config.contractId] }],
-      limit: 1000,
-    })
-  let res: rpc.Api.GetEventsResponse
+  let window: { events: rpc.Api.EventResponse[]; truncated: boolean }
   try {
-    res = await fetchFrom(Math.max(1, latest - 115_000))
+    window = await fetchAllContractEvents(server, config.contractId, Math.max(1, latest - 115_000))
   } catch {
-    res = await fetchFrom(Math.max(1, latest - 17_000))
+    window = await fetchAllContractEvents(server, config.contractId, Math.max(1, latest - 17_000))
   }
-  return res.events
+  const events = window.events
     .map(ev =>
       mapEvent({
         id: ev.id,
@@ -280,6 +307,7 @@ export async function listAuditEvents(): Promise<AuditEvent[]> {
     )
     .filter((e): e is AuditEvent => e !== null)
     .reverse()
+  return { events, truncated: window.truncated }
 }
 
 // ----- writes --------------------------------------------------------------
