@@ -72,6 +72,9 @@ pub enum VaspStatus {
 pub enum PaymentStatus {
     /// Held in escrow, waiting for attestation and/or release.
     Pending,
+    /// Beneficiary has asked the originator for more information. The
+    /// originator can amend the attestation to return it to `Pending`.
+    Queried,
     Released,
     Rejected,
     /// Expired and refunded to the originator.
@@ -217,6 +220,15 @@ fn require_pending(p: &Payment) -> Result<(), Error> {
     Ok(())
 }
 
+/// Unresolved payment: `Pending` or `Queried`. Used where a payment may be
+/// rejected or reclaimed even while the beneficiary has a query open.
+fn require_open(p: &Payment) -> Result<(), Error> {
+    match p.status {
+        PaymentStatus::Pending | PaymentStatus::Queried => Ok(()),
+        _ => Err(Error::PaymentNotPending),
+    }
+}
+
 /// Threshold lookup: exact jurisdiction first, then the `"*"` wildcard.
 /// If neither is configured the threshold is 0, i.e. *every* payment needs an
 /// attestation. Failing closed is the safe default for a compliance tool.
@@ -325,6 +337,14 @@ pub struct PaymentReleased {
     #[topic]
     pub id: u64,
     pub amount: i128,
+}
+
+#[contractevent(topics = ["pay_qry"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentQueried {
+    #[topic]
+    pub id: u64,
+    pub reason: String,
 }
 
 #[contractevent(topics = ["pay_rej"])]
@@ -613,7 +633,7 @@ impl ComplyRail {
     ) -> Result<(), Error> {
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
-        require_pending(&p)?;
+        require_open(&p)?;
         if p.acknowledged_at.is_some() {
             return Err(Error::AlreadyAcknowledged);
         }
@@ -621,6 +641,8 @@ impl ComplyRail {
             .attestation_hash
             .clone()
             .ok_or(Error::AttestationRequired)?;
+        // Amending answers a query: the payment returns to Pending.
+        p.status = PaymentStatus::Pending;
         let now = env.ledger().timestamp();
         p.attestation_hash = Some(attestation_hash.clone());
         p.ivms_version = Some(ivms_version.clone());
@@ -703,8 +725,29 @@ impl ComplyRail {
         Ok(())
     }
 
+    /// Beneficiary VASP asks the originator for more information about a
+    /// held payment. Moves `Pending` to `Queried`. Not possible once the
+    /// attestation is acknowledged; reject instead.
+    pub fn query_payment(env: Env, payment_id: u64, reason: String) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.to_vasp.require_auth();
+        require_pending(&p)?;
+        if p.acknowledged_at.is_some() {
+            return Err(Error::AlreadyAcknowledged);
+        }
+        p.status = PaymentStatus::Queried;
+        save_payment(&env, &p);
+        PaymentQueried {
+            id: payment_id,
+            reason,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     /// Beneficiary VASP or admin rejects a held payment; funds go back to the
-    /// originating VASP. `reason` is emitted for the audit trail.
+    /// originating VASP. Allowed while `Pending` or `Queried`. `reason` is
+    /// emitted for the audit trail.
     pub fn reject_payment(
         env: Env,
         payment_id: u64,
@@ -713,7 +756,7 @@ impl ComplyRail {
     ) -> Result<(), Error> {
         caller.require_auth();
         let mut p = load_payment(&env, payment_id)?;
-        require_pending(&p)?;
+        require_open(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {
             return Err(Error::Unauthorized);
         }
@@ -728,11 +771,12 @@ impl ComplyRail {
     }
 
     /// After `expires_at`, the originating VASP can pull back a payment that
-    /// was never released or rejected, so funds can't get stuck.
+    /// was never released or rejected, so funds can't get stuck. This also
+    /// applies while the payment is `Queried`.
     pub fn reclaim_expired(env: Env, payment_id: u64) -> Result<(), Error> {
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
-        require_pending(&p)?;
+        require_open(&p)?;
         if env.ledger().timestamp() < p.expires_at {
             return Err(Error::PaymentNotExpired);
         }

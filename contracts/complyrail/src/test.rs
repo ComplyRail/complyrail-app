@@ -400,6 +400,168 @@ fn amend_is_signed_by_originator() {
 }
 
 #[test]
+fn query_moves_pending_to_queried_and_blocks_release() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client
+        .query_payment(&id, &s(&t.env, "originator name missing"));
+
+    let contract = t.client.address.clone();
+    let queried = PaymentQueried {
+        id,
+        reason: s(&t.env, "originator name missing"),
+    };
+    assert!(t
+        .env
+        .events()
+        .all()
+        .events()
+        .contains(&queried.to_xdr(&t.env, &contract)));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Queried);
+
+    // a queried payment cannot be released until it is amended
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.admin),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn query_only_from_pending_and_not_after_ack() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    assert_eq!(
+        t.client.try_query_payment(&id, &s(&t.env, "late query")),
+        Err(Ok(Error::AlreadyAcknowledged))
+    );
+    // the acknowledged payment is still Pending: the query was refused
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+}
+
+#[test]
+fn query_twice_is_rejected() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "first"));
+    assert_eq!(
+        t.client.try_query_payment(&id, &s(&t.env, "second")),
+        Err(Ok(Error::PaymentNotPending))
+    );
+}
+
+#[test]
+fn originator_amends_queried_payment_back_to_pending() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "wrong payload"));
+    t.client
+        .amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025"));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Pending);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 9)));
+
+    // the corrected attestation can now be acknowledged and released
+    t.client.acknowledge_attestation(&id);
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn beneficiary_can_reject_queried_payment() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "unclear"));
+    t.client
+        .reject_payment(&id, &t.vasp_b, &s(&t.env, "giving up"));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn queried_payment_can_be_reclaimed_after_expiry() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "unclear"));
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn query_is_signed_by_beneficiary_vasp() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "unclear"));
+    let (signer, _) = t.env.auths().first().cloned().expect("auth recorded");
+    assert_eq!(signer, t.vasp_b);
+}
+
+#[test]
 fn release_fails_if_beneficiary_vasp_suspended_after_submit() {
     let t = setup();
     let id = t.client.submit_payment(
