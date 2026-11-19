@@ -19,7 +19,7 @@
 //!
 //! Every state change emits an event whose topic matches the dashboard's
 //! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`,
-//! `pay_rel`, `pay_rej`).
+//! `pay_rel`, `pay_rej`, `pay_canc`).
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
@@ -55,6 +55,8 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// Payment already has an attestation, so the originator can no longer cancel it.
+    AlreadyAttested = 15,
 }
 
 #[contracttype]
@@ -74,6 +76,8 @@ pub enum PaymentStatus {
     Rejected,
     /// Expired and refunded to the originator.
     Reclaimed,
+    /// Withdrawn by the originator before attestation and refunded.
+    Cancelled,
 }
 
 #[contracttype]
@@ -299,6 +303,14 @@ pub struct PaymentRejected {
     #[topic]
     pub id: u64,
     pub reason: String,
+}
+
+#[contractevent(topics = ["pay_canc"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentCancelled {
+    #[topic]
+    pub id: u64,
+    pub amount: i128,
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +639,27 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Originating VASP withdraws a held payment before any attestation was
+    /// submitted. Funds return to the originator immediately, without waiting
+    /// for the reclaim window.
+    pub fn cancel_payment(env: Env, payment_id: u64) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.from_vasp.require_auth();
+        require_pending(&p)?;
+        if p.attestation_hash.is_some() {
+            return Err(Error::AlreadyAttested);
+        }
+        let to = p.from_vasp.clone();
+        let amount = p.amount;
+        settle(&env, &mut p, &to, PaymentStatus::Cancelled);
+        PaymentCancelled {
+            id: payment_id,
+            amount,
         }
         .publish(&env);
         Ok(())

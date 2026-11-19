@@ -378,3 +378,72 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- cancel --------------------------------------------------------------
+
+#[test]
+fn cancel_before_attestation_refunds_originator() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(t.token.balance(&t.vasp_a), 995_000);
+
+    t.client.cancel_payment(&id);
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Cancelled);
+    assert_eq!(p.resolved_at, Some(1_000));
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+
+    // a cancelled payment cannot be resolved again
+    let r = t.client.try_cancel_payment(&id);
+    assert_eq!(r, Err(Ok(Error::PaymentNotPending)));
+    let r = t.client.try_release_payment(&id, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::PaymentNotPending)));
+}
+
+#[test]
+fn cancel_after_attestation_is_rejected() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    let r = t.client.try_cancel_payment(&id);
+    assert_eq!(r, Err(Ok(Error::AlreadyAttested)));
+
+    // funds stay in escrow and the payment can still be released
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+    assert_eq!(t.token.balance(&t.client.address), 5_000);
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn cancel_settled_payment_is_rejected() {
+    let t = setup();
+    // below threshold: already released at submission
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &2_999,
+    );
+    let r = t.client.try_cancel_payment(&id);
+    assert_eq!(r, Err(Ok(Error::PaymentNotPending)));
+    assert_eq!(t.token.balance(&t.beneficiary), 2_999);
+}
