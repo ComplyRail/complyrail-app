@@ -378,3 +378,62 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- threshold index (list_thresholds) -----------------------------------
+
+#[test]
+fn list_thresholds_includes_configured_rules() {
+    let t = setup();
+    let a = t.token.address.clone();
+    let rules = t.client.list_thresholds();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules.get(0).unwrap(), (a, s(&t.env, "US"), 3_000));
+}
+
+#[test]
+fn list_thresholds_adds_new_rules_without_duplicates() {
+    let t = setup();
+    let a = t.token.address.clone();
+    t.client.set_threshold(&a, &s(&t.env, "*"), &1_000);
+    // updating an existing rule must not add a second entry
+    t.client.set_threshold(&a, &s(&t.env, "US"), &4_500);
+    let rules = t.client.list_thresholds();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules.get(0).unwrap(), (a.clone(), s(&t.env, "US"), 4_500));
+    assert_eq!(rules.get(1).unwrap(), (a, s(&t.env, "*"), 1_000));
+}
+
+#[test]
+fn setting_threshold_to_zero_removes_it_from_list() {
+    let t = setup();
+    let a = t.token.address.clone();
+    t.client.set_threshold(&a, &s(&t.env, "*"), &1_000);
+    t.client.set_threshold(&a, &s(&t.env, "US"), &0);
+    let rules = t.client.list_thresholds();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules.get(0).unwrap(), (a.clone(), s(&t.env, "*"), 1_000));
+    // The explicit 0 still answers lookups and does not fall back to "*".
+    assert_eq!(t.client.get_threshold(&a, &s(&t.env, "US")), 0);
+}
+
+#[test]
+fn zero_rule_can_be_re_added() {
+    let t = setup();
+    let a = t.token.address.clone();
+    t.client.set_threshold(&a, &s(&t.env, "US"), &0);
+    assert_eq!(t.client.list_thresholds().len(), 0);
+    t.client.set_threshold(&a, &s(&t.env, "US"), &750);
+    let rules = t.client.list_thresholds();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules.get(0).unwrap(), (a, s(&t.env, "US"), 750));
+}
+
+#[test]
+fn list_thresholds_empty_by_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let c = ComplyRailClient::new(&env, &id);
+    assert_eq!(c.list_thresholds().len(), 0);
+}

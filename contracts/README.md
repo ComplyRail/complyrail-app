@@ -33,7 +33,8 @@ originator VASP                     contract                      beneficiary VA
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
-| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
+| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | setting `0` drops the rule from `list_thresholds` but still answers `get_threshold` with 0 (no `"*"` fallback) |
+| `list_thresholds` | – | `(asset, jurisdiction, amount)` for every rule above 0 |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |

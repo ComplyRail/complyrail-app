@@ -117,9 +117,19 @@ enum DataKey {
     PaymentTtl,
     NextPaymentId,
     VaspList,
+    /// Index of `(asset, jurisdiction)` rules whose amount is above zero.
+    ThresholdList,
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
+}
+
+/// One configured threshold rule, as stored in the threshold index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdKey {
+    pub asset: Address,
+    pub jurisdiction: String,
 }
 
 #[contract]
@@ -228,6 +238,35 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
+fn threshold_index(env: &Env) -> Vec<ThresholdKey> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ThresholdList)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Adds the rule to the index when `active`, removes it otherwise.
+fn update_threshold_index(env: &Env, asset: &Address, jurisdiction: &String, active: bool) {
+    let mut index = threshold_index(env);
+    let pos = index
+        .iter()
+        .position(|k| k.asset == *asset && k.jurisdiction == *jurisdiction);
+    match (active, pos) {
+        (true, None) => index.push_back(ThresholdKey {
+            asset: asset.clone(),
+            jurisdiction: jurisdiction.clone(),
+        }),
+        (false, Some(i)) => {
+            index.remove(i as u32);
+        }
+        _ => return,
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::ThresholdList, &index);
+    bump_instance(env);
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
@@ -320,6 +359,7 @@ impl ComplyRail {
         );
         s.set(&DataKey::NextPaymentId, &0u64);
         s.set(&DataKey::VaspList, &Vec::<Address>::new(&env));
+        s.set(&DataKey::ThresholdList, &Vec::<ThresholdKey>::new(&env));
         bump_instance(&env);
     }
 
@@ -453,8 +493,11 @@ impl ComplyRail {
             return Err(Error::InvalidThreshold);
         }
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
+        // Keep the stored value even at 0: an explicit 0 overrides the `"*"`
+        // fallback (fail closed), so it must not be deleted.
         env.storage().persistent().set(&key, &amount);
         bump_persistent(&env, &key);
+        update_threshold_index(&env, &asset, &jurisdiction, amount > 0);
         ThresholdSet {
             asset,
             jurisdiction,
@@ -466,6 +509,22 @@ impl ComplyRail {
 
     pub fn get_threshold(env: Env, asset: Address, jurisdiction: String) -> i128 {
         threshold_for(&env, &asset, &jurisdiction)
+    }
+
+    /// Every configured rule with a non-zero amount, as
+    /// `(asset, jurisdiction, amount)`. A rule set to 0 is dropped from this
+    /// list but still answers `get_threshold` with 0.
+    pub fn list_thresholds(env: Env) -> Vec<(Address, String, i128)> {
+        let mut out = Vec::new(&env);
+        for k in threshold_index(&env).iter() {
+            let amount: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Threshold(k.asset.clone(), k.jurisdiction.clone()))
+                .unwrap_or(0);
+            out.push_back((k.asset, k.jurisdiction, amount));
+        }
+        out
     }
 
     // ----- Payments --------------------------------------------------------

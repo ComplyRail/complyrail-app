@@ -1,5 +1,5 @@
 import { contract, rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
-import { ASSETS, JURISDICTIONS, config, isContractConfigured } from './config'
+import { config, isContractConfigured } from './config'
 import { bytesToHex, fromUnits, hexToBytes } from './format'
 import {
   AuditEvent,
@@ -224,13 +224,18 @@ export async function getPayment(id: string): Promise<PaymentRecord | null> {
   }
 }
 
-/** Every configured (non-zero) threshold for the known assets and jurisdictions. */
-export async function listThresholds(): Promise<ThresholdRow[]> {
-  const pairs = ASSETS.flatMap(a => JURISDICTIONS.map(j => ({ asset: a.contractId, jurisdiction: j })))
-  const amounts = await Promise.all(pairs.map(p => read<bigint>('get_threshold', p)))
-  return pairs
-    .map((p, i) => ({ ...p, amount: BigInt(amounts[i]) }))
+/** Decoded `(asset, jurisdiction, amount)` tuples from `list_thresholds`. */
+export type RawThreshold = [string, string, bigint | number | string]
+
+export function mapThresholds(rows: RawThreshold[]): ThresholdRow[] {
+  return rows
+    .map(([asset, jurisdiction, amount]) => ({ asset, jurisdiction, amount: BigInt(amount) }))
     .filter(r => r.amount > 0n)
+}
+
+/** Every configured (non-zero) threshold, in a single contract read. */
+export async function listThresholds(): Promise<ThresholdRow[]> {
+  return mapThresholds(await read<RawThreshold[]>('list_thresholds'))
 }
 
 /** Contract events from the RPC's retention window (about 7 days on testnet). */

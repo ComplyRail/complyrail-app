@@ -4,6 +4,7 @@ import {
   buildIvmsPayload,
   mapEvent,
   mapPayment,
+  mapThresholds,
   mapVasp,
   sha256Hex,
   unwrap,
@@ -81,6 +82,24 @@ describe('mapPayment', () => {
     expect(p.attestationHash).toBe('01'.repeat(32))
     expect(p.ivmsVersion).toBe('IVMS101.2023')
     expect(p.resolvedAt).toBe(300)
+  })
+})
+
+describe('mapThresholds', () => {
+  it('converts tuples to rows and drops zero amounts', () => {
+    const rows = mapThresholds([
+      [G1, 'US', 3_000n],
+      [G1, '*', 0n],
+      [G2, 'GB', '250'],
+    ])
+    expect(rows).toEqual([
+      { asset: G1, jurisdiction: 'US', amount: 3_000n },
+      { asset: G2, jurisdiction: 'GB', amount: 250n },
+    ])
+  })
+
+  it('returns an empty list when nothing is configured', () => {
+    expect(mapThresholds([])).toEqual([])
   })
 })
 
