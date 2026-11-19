@@ -306,6 +306,100 @@ fn acknowledge_is_signed_by_beneficiary_vasp() {
 }
 
 #[test]
+fn amend_replaces_attestation_and_keeps_old_hash_in_event() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.env.ledger().set_timestamp(1_500);
+    t.client
+        .amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025"));
+    // capture events of the amend call before any further contract call
+    let events = t.env.events().all();
+
+    let contract = t.client.address.clone();
+    let amended = AttestationAmended {
+        id,
+        old_hash: key(&t.env, 7),
+        new_hash: key(&t.env, 9),
+        ivms_version: s(&t.env, "IVMS101.2025"),
+    };
+    assert!(events.events().contains(&amended.to_xdr(&t.env, &contract)));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 9)));
+    assert_eq!(p.ivms_version, Some(s(&t.env, "IVMS101.2025")));
+    assert_eq!(p.attested_at, Some(1_500));
+    assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+#[test]
+fn amend_requires_existing_attestation() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(
+        t.client
+            .try_amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025")),
+        Err(Ok(Error::AttestationRequired))
+    );
+}
+
+#[test]
+fn amend_is_blocked_after_acknowledgement() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    assert_eq!(
+        t.client
+            .try_amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025")),
+        Err(Ok(Error::AlreadyAcknowledged))
+    );
+    // the acknowledged hash is unchanged
+    assert_eq!(
+        t.client.get_payment(&id).attestation_hash,
+        Some(key(&t.env, 7))
+    );
+}
+
+#[test]
+fn amend_is_signed_by_originator() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client
+        .amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025"));
+    let (signer, _) = t.env.auths().first().cloned().expect("auth recorded");
+    assert_eq!(signer, t.vasp_a);
+}
+
+#[test]
 fn release_fails_if_beneficiary_vasp_suspended_after_submit() {
     let t = setup();
     let id = t.client.submit_payment(

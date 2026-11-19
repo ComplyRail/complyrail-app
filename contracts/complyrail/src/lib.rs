@@ -297,6 +297,18 @@ pub struct AttestationAcknowledged {
     pub at: u64,
 }
 
+/// Emitted when the originator replaces an attestation before it is
+/// acknowledged. Carries both hashes so the superseded one stays auditable.
+#[contractevent(topics = ["att_amd"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationAmended {
+    #[topic]
+    pub id: u64,
+    pub old_hash: BytesN<32>,
+    pub new_hash: BytesN<32>,
+    pub ivms_version: String,
+}
+
 /// Emitted when the admin releases a payment the beneficiary VASP has not
 /// acknowledged. Keeps the override visible in the audit trail.
 #[contractevent(topics = ["pay_ovr"])]
@@ -584,6 +596,40 @@ impl ComplyRail {
         AttestationSubmitted {
             id: payment_id,
             hash: attestation_hash,
+            ivms_version,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Originating VASP replaces the attestation of a held payment, for
+    /// example to send a corrected IVMS101 payload. Allowed only until the
+    /// beneficiary acknowledges. The superseded hash is emitted in `att_amd`.
+    pub fn amend_attestation(
+        env: Env,
+        payment_id: u64,
+        attestation_hash: BytesN<32>,
+        ivms_version: String,
+    ) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.from_vasp.require_auth();
+        require_pending(&p)?;
+        if p.acknowledged_at.is_some() {
+            return Err(Error::AlreadyAcknowledged);
+        }
+        let old_hash = p
+            .attestation_hash
+            .clone()
+            .ok_or(Error::AttestationRequired)?;
+        let now = env.ledger().timestamp();
+        p.attestation_hash = Some(attestation_hash.clone());
+        p.ivms_version = Some(ivms_version.clone());
+        p.attested_at = Some(now);
+        save_payment(&env, &p);
+        AttestationAmended {
+            id: payment_id,
+            old_hash,
+            new_hash: attestation_hash,
             ivms_version,
         }
         .publish(&env);
