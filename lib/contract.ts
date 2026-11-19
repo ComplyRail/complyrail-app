@@ -250,11 +250,42 @@ export async function listThresholds(): Promise<ThresholdRow[]> {
     .filter(r => r.amount > 0n)
 }
 
+export interface AuditWindow {
+  startLedger: number
+  latestLedger: number
+  /** Unix seconds when the window's first ledger closed. Estimated if the RPC cannot report it. */
+  since: number
+  /** True when the wide window failed and the narrow fallback window was used. */
+  fallback: boolean
+  fallbackReason?: string
+}
+
 export interface AuditEventsResult {
   /** Newest first. */
   events: AuditEvent[]
   /** True when the page cap was reached before the window was exhausted; older events are missing. */
   truncated: boolean
+  window: AuditWindow
+}
+
+const WIDE_WINDOW_LEDGERS = 115_000
+const NARROW_WINDOW_LEDGERS = 17_000
+/** Average testnet ledger interval, used only when the RPC cannot report the close time. */
+const LEDGER_SECONDS = 5
+
+async function windowSince(server: Pick<rpc.Server, 'getLedgers'>, startLedger: number, latest: number): Promise<number> {
+  try {
+    const res = await server.getLedgers({ startLedger, pagination: { limit: 1 } })
+    const closedAt = res.ledgers[0]?.ledgerCloseTime
+    // RPC sends a Unix timestamp string; accept an ISO date too.
+    const seconds = closedAt ? Number(closedAt) : NaN
+    if (Number.isFinite(seconds) && seconds > 0) return Math.floor(seconds)
+    const parsed = closedAt ? Date.parse(closedAt) : NaN
+    if (Number.isFinite(parsed)) return Math.floor(parsed / 1000)
+  } catch {
+    // Fall through to the estimate; the window itself is still valid.
+  }
+  return Math.floor(Date.now() / 1000) - (latest - startLedger) * LEDGER_SECONDS
 }
 
 /** RPC page size for getEvents (the RPC maximum). */
@@ -288,11 +319,23 @@ export async function listAuditEvents(): Promise<AuditEventsResult> {
   assertConfigured()
   const server = new rpc.Server(config.rpcUrl)
   const latest = (await server.getLatestLedger()).sequence
-  let window: { events: rpc.Api.EventResponse[]; truncated: boolean }
+  const attempt = async (span: number) => {
+    const startLedger = Math.max(1, latest - span)
+    const result = await fetchAllContractEvents(server, config.contractId, startLedger)
+    return { ...result, startLedger }
+  }
+  let fallback = false
+  let fallbackReason: string | undefined
+  let window: Awaited<ReturnType<typeof attempt>>
   try {
-    window = await fetchAllContractEvents(server, config.contractId, Math.max(1, latest - 115_000))
-  } catch {
-    window = await fetchAllContractEvents(server, config.contractId, Math.max(1, latest - 17_000))
+    window = await attempt(WIDE_WINDOW_LEDGERS)
+  } catch (e) {
+    fallback = true
+    fallbackReason = e instanceof Error ? e.message : String(e)
+    if (process.env.NODE_ENV === 'development') {
+      console.warn(`[audit] wide event window failed, using ${NARROW_WINDOW_LEDGERS}-ledger fallback:`, fallbackReason)
+    }
+    window = await attempt(NARROW_WINDOW_LEDGERS)
   }
   const events = window.events
     .map(ev =>
@@ -307,7 +350,17 @@ export async function listAuditEvents(): Promise<AuditEventsResult> {
     )
     .filter((e): e is AuditEvent => e !== null)
     .reverse()
-  return { events, truncated: window.truncated }
+  return {
+    events,
+    truncated: window.truncated,
+    window: {
+      startLedger: window.startLedger,
+      latestLedger: latest,
+      since: await windowSince(server, window.startLedger, latest),
+      fallback,
+      fallbackReason,
+    },
+  }
 }
 
 // ----- writes --------------------------------------------------------------

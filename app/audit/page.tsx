@@ -16,7 +16,7 @@ const EVENT_TYPES = [
 ]
 
 export default function AuditLogPage() {
-  const { events, truncated, loading, error, reload } = useAuditEvents()
+  const { events, truncated, window: auditWindow, loading, error, reload } = useAuditEvents()
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
 
   const filteredEvents = selectedTypes.length > 0
@@ -96,6 +96,12 @@ export default function AuditLogPage() {
             Live contract events from Stellar RPC (about the last 7 days).{' '}
             <button onClick={reload} className="text-primary hover:underline">Refresh</button>
           </p>
+          {auditWindow.since > 0 && (
+            <p className="text-sm text-muted-foreground mt-2" data-testid="audit-window">
+              Showing events since {new Date(auditWindow.since * 1000).toLocaleString()}
+              {auditWindow.fallback && ' (reduced window: the full 7-day query failed)'}
+            </p>
+          )}
         </div>
 
         {truncated && (
