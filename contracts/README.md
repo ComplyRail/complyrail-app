@@ -53,6 +53,20 @@ stellar contract build                             # builds the WASM
 
 Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) v25.2+ (`soroban-sdk` 29 must be built with `stellar contract build`).
 
+## Dependency advisories
+
+CI runs `cargo deny check advisories` against the RustSec database on every change to the contract. The policy lives in `contracts/complyrail/deny.toml`.
+
+- **Failing:** any vulnerability advisory fails the job, whatever its severity. Unmaintained crates that are direct dependencies also fail.
+- **Run locally:** `cd contracts/complyrail && cargo deny check advisories` (install with `cargo install cargo-deny --locked`).
+
+**Exception process.** To accept an advisory that cannot be fixed yet:
+
+1. Confirm the advisory is not reachable from the contract, or that no fixed release can be selected. Check `cargo tree -i <crate>`.
+2. Add an entry to `ignore` in `deny.toml` with the advisory ID and a `reason` that names the path and the blocker.
+3. Note the exception and its review trigger (for example, the next `soroban-sdk` bump) in the PR description.
+4. Get a second maintainer to approve the PR. Remove the entry as soon as a fix is available.
+
 ## Deploy to testnet
 
 ```bash
