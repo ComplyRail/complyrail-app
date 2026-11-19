@@ -62,6 +62,8 @@ pub enum Error {
     ReceiverStillActive = 15,
     /// Batch size exceeds `MAX_REFUND_BATCH`.
     BatchTooLarge = 16,
+    /// Holding this payment would push the originator's escrow exposure over its cap.
+    ExposureCapExceeded = 17,
 }
 
 #[contracttype]
@@ -127,6 +129,10 @@ enum DataKey {
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
+    /// Per-(originator, asset) cap on value held in escrow.
+    ExposureCap(Address, Address),
+    /// Per-(originator, asset) sum of currently held (pending) amounts.
+    Exposure(Address, Address),
 }
 
 #[contract]
@@ -235,8 +241,24 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
+fn exposure(env: &Env, vasp: &Address, asset: &Address) -> i128 {
+    let key = DataKey::Exposure(vasp.clone(), asset.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+fn set_exposure(env: &Env, vasp: &Address, asset: &Address, amount: i128) {
+    let key = DataKey::Exposure(vasp.clone(), asset.clone());
+    env.storage().persistent().set(&key, &amount);
+    bump_persistent(env, &key);
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
+    if p.requires_attestation {
+        // A held payment is leaving escrow, so it stops counting towards exposure.
+        let held = exposure(env, &p.from_vasp, &p.asset);
+        set_exposure(env, &p.from_vasp, &p.asset, held - p.amount);
+    }
     p.status = status;
     p.resolved_at = Some(env.ledger().timestamp());
     save_payment(env, p);
@@ -475,6 +497,39 @@ impl ComplyRail {
         threshold_for(&env, &asset, &jurisdiction)
     }
 
+    // ----- Escrow exposure caps -------------------------------------------
+
+    /// Caps the total value `vasp` may hold in escrow in `asset` at once.
+    /// Only held (attestation-required) payments count. Without a cap the
+    /// originator is unlimited.
+    pub fn set_exposure_cap(
+        env: Env,
+        vasp: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        require_admin(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let key = DataKey::ExposureCap(vasp, asset);
+        env.storage().persistent().set(&key, &amount);
+        bump_persistent(&env, &key);
+        Ok(())
+    }
+
+    /// Current cap for `vasp` in `asset`, or `None` when uncapped.
+    pub fn get_exposure_cap(env: Env, vasp: Address, asset: Address) -> Option<i128> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ExposureCap(vasp, asset))
+    }
+
+    /// Sum of `vasp`'s currently held (pending) amounts in `asset`.
+    pub fn get_exposure(env: Env, vasp: Address, asset: Address) -> i128 {
+        exposure(&env, &vasp, &asset)
+    }
+
     // ----- Payments --------------------------------------------------------
 
     /// Originating VASP sends `amount` of `asset` towards `beneficiary` at
@@ -498,6 +553,19 @@ impl ComplyRail {
         let origin = require_active_vasp(&env, &from_vasp)?;
         require_active_vasp(&env, &to_vasp)?;
 
+        let requires_attestation = amount >= threshold_for(&env, &asset, &origin.jurisdiction);
+        if requires_attestation {
+            let cap_key = DataKey::ExposureCap(from_vasp.clone(), asset.clone());
+            if let Some(cap) = env.storage().persistent().get::<_, i128>(&cap_key) {
+                let total = exposure(&env, &from_vasp, &asset)
+                    .checked_add(amount)
+                    .ok_or(Error::ExposureCapExceeded)?;
+                if total > cap {
+                    return Err(Error::ExposureCapExceeded);
+                }
+            }
+        }
+
         token::Client::new(&env, &asset).transfer(
             &from_vasp,
             env.current_contract_address(),
@@ -511,7 +579,6 @@ impl ComplyRail {
         bump_instance(&env);
 
         let now = env.ledger().timestamp();
-        let requires_attestation = amount >= threshold_for(&env, &asset, &origin.jurisdiction);
         let mut p = Payment {
             id,
             from_vasp: from_vasp.clone(),
@@ -539,6 +606,8 @@ impl ComplyRail {
         .publish(&env);
 
         if requires_attestation {
+            let held = exposure(&env, &p.from_vasp, &p.asset);
+            set_exposure(&env, &p.from_vasp, &p.asset, held + p.amount);
             save_payment(&env, &p);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released);

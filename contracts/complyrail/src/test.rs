@@ -456,3 +456,94 @@ fn refund_batch_limits_enforced() {
     let active = t2.client.try_refund_pending_for_vasp(&t2.vasp_b, &0, &10);
     assert_eq!(active, Err(Ok(Error::ReceiverStillActive)));
 }
+
+// ----- per-VASP escrow exposure cap (issue #34) ---------------------------
+
+#[test]
+fn exposure_cap_blocks_payments_over_limit() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_exposure_cap(&t.vasp_a, &token, &10_000);
+    assert_eq!(t.client.get_exposure_cap(&t.vasp_a, &token), Some(10_000));
+
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000);
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000);
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 10_000);
+
+    let r = t
+        .client
+        .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &3_000);
+    assert_eq!(r, Err(Ok(Error::ExposureCapExceeded)));
+    // Rejected payment leaves funds and exposure untouched.
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 10_000);
+    assert_eq!(t.token.balance(&t.vasp_a), 990_000);
+}
+
+#[test]
+fn exposure_released_after_rejection() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_exposure_cap(&t.vasp_a, &token, &5_000);
+    let id = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000);
+    assert_eq!(
+        t.client.try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &3_000),
+        Err(Ok(Error::ExposureCapExceeded))
+    );
+
+    t.client
+        .reject_payment(&id, &t.vasp_b, &s(&t.env, "bad data"));
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 0);
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000);
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 5_000);
+}
+
+#[test]
+fn exposure_released_after_release_and_reclaim() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_exposure_cap(&t.vasp_a, &token, &6_000);
+    let released = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &4_000);
+    t.client
+        .submit_attestation(&released, &key(&t.env, 7), &s(&t.env, "2020"));
+    t.client.release_payment(&released, &t.vasp_b);
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 0);
+
+    let expired = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &6_000);
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 6_000);
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL + 1);
+    t.client.reclaim_expired(&expired);
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 0);
+}
+
+#[test]
+fn below_threshold_payments_do_not_count_towards_cap() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_exposure_cap(&t.vasp_a, &token, &0);
+    // Zero cap blocks any held payment, but immediate settlements pass.
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &100);
+    assert_eq!(t.client.get_exposure(&t.vasp_a, &token), 0);
+    assert_eq!(
+        t.client.try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000),
+        Err(Ok(Error::ExposureCapExceeded))
+    );
+}
+
+#[test]
+fn negative_exposure_cap_rejected() {
+    let t = setup();
+    let token = t.token.address.clone();
+    let r = t.client.try_set_exposure_cap(&t.vasp_a, &token, &-1);
+    assert_eq!(r, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(t.client.get_exposure_cap(&t.vasp_a, &token), None);
+}
