@@ -32,6 +32,9 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Largest number of payments a single paginated read returns.
+pub const MAX_PAGE_SIZE: u32 = 50;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -122,6 +125,10 @@ enum DataKey {
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
+    /// Number of payments indexed for a VASP (as originator or beneficiary).
+    VaspPaymentCount(Address),
+    /// The `n`-th payment id indexed for a VASP, in submission order.
+    VaspPayment(Address, u64),
 }
 
 /// One configured threshold rule, as stored in the threshold index.
@@ -214,6 +221,22 @@ fn save_payment(env: &Env, p: &Payment) {
     let key = DataKey::Payment(p.id);
     env.storage().persistent().set(&key, p);
     bump_persistent(env, &key);
+}
+
+/// Appends a payment id to a VASP's index (one storage entry per payment, so
+/// the index never grows into a single large entry).
+fn index_vasp_payment(env: &Env, vasp: &Address, id: u64) {
+    let count_key = DataKey::VaspPaymentCount(vasp.clone());
+    let n: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let key = DataKey::VaspPayment(vasp.clone(), n);
+    env.storage().persistent().set(&key, &id);
+    bump_persistent(env, &key);
+    env.storage().persistent().set(&count_key, &(n + 1));
+    bump_persistent(env, &count_key);
+}
+
+fn page_len(limit: u32) -> u64 {
+    limit.min(MAX_PAGE_SIZE) as u64
 }
 
 fn require_pending(p: &Payment) -> Result<(), Error> {
@@ -581,6 +604,9 @@ impl ComplyRail {
             resolved_at: None,
         };
 
+        index_vasp_payment(&env, &from_vasp, id);
+        index_vasp_payment(&env, &to_vasp, id);
+
         PaymentSubmitted {
             id,
             from_vasp,
@@ -701,5 +727,49 @@ impl ComplyRail {
             .instance()
             .get(&DataKey::NextPaymentId)
             .unwrap_or(0)
+    }
+
+    /// Payments with ids `start..start+limit`, ascending. `limit` is capped at
+    /// `MAX_PAGE_SIZE`; a page past the end (or `limit` 0) is empty.
+    pub fn list_payments(env: Env, start: u64, limit: u32) -> Vec<Payment> {
+        let mut out = Vec::new(&env);
+        let end = start
+            .saturating_add(page_len(limit))
+            .min(Self::payment_count(env.clone()));
+        let mut id = start;
+        while id < end {
+            if let Ok(p) = load_payment(&env, id) {
+                out.push_back(p);
+            }
+            id += 1;
+        }
+        out
+    }
+
+    /// Payments involving `vasp` (as originator or beneficiary side), in
+    /// submission order, starting at position `start` of that VASP's index.
+    /// `limit` is capped at `MAX_PAGE_SIZE`.
+    pub fn list_payments_by_vasp(env: Env, vasp: Address, start: u64, limit: u32) -> Vec<Payment> {
+        let mut out = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaspPaymentCount(vasp.clone()))
+            .unwrap_or(0);
+        let end = start.saturating_add(page_len(limit)).min(count);
+        let mut n = start;
+        while n < end {
+            let id: Option<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VaspPayment(vasp.clone(), n));
+            if let Some(id) = id {
+                if let Ok(p) = load_payment(&env, id) {
+                    out.push_back(p);
+                }
+            }
+            n += 1;
+        }
+        out
     }
 }

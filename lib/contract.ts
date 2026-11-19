@@ -208,11 +208,43 @@ export async function getVasp(address: string): Promise<VaspEntry | null> {
   }
 }
 
-/** Newest first, capped at `limit`. */
-export async function listPayments(limit = 100): Promise<PaymentRecord[]> {
-  const count = Number(await read<bigint>('payment_count'))
-  const ids = Array.from({ length: Math.min(count, limit) }, (_, i) => BigInt(count - 1 - i))
-  const raws = await Promise.all(ids.map(payment_id => read<RawPayment>('get_payment', { payment_id })))
+/** Must match the contract's `MAX_PAGE_SIZE`. */
+export const PAYMENT_PAGE_SIZE = 50
+
+/**
+ * Ids `[start, start + limit)` for the page of payments that sits just below
+ * `cursor` (ids `< cursor` are still unread). `cursor` 0 means nothing is left.
+ */
+export function pageBounds(cursor: number, size = PAYMENT_PAGE_SIZE): { start: number; limit: number } {
+  const start = Math.max(0, cursor - size)
+  return { start, limit: cursor - start }
+}
+
+export interface PaymentPage {
+  /** Newest first. */
+  payments: PaymentRecord[]
+  /** Pass to `listPaymentsPage` for the next (older) page; 0 when none is left. */
+  nextCursor: number
+  /** Total payments on the contract. Present on the first page only. */
+  total?: number
+}
+
+/**
+ * One page of payments, newest first. The first page (no cursor) costs two
+ * reads (`payment_count`, `list_payments`); later pages cost one.
+ */
+export async function listPaymentsPage(cursor?: number): Promise<PaymentPage> {
+  const total = cursor === undefined ? Number(await read<bigint>('payment_count')) : undefined
+  const end = cursor ?? total ?? 0
+  const { start, limit } = pageBounds(end)
+  if (limit === 0) return { payments: [], nextCursor: 0, total }
+  const raws = await read<RawPayment[]>('list_payments', { start: BigInt(start), limit })
+  return { payments: raws.map(mapPayment).reverse(), nextCursor: start, total }
+}
+
+/** Payments involving one VASP, in submission order (oldest first). */
+export async function listPaymentsByVasp(vasp: string, start = 0, limit = PAYMENT_PAGE_SIZE): Promise<PaymentRecord[]> {
+  const raws = await read<RawPayment[]>('list_payments_by_vasp', { vasp, start: BigInt(start), limit })
   return raws.map(mapPayment)
 }
 

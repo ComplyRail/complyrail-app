@@ -10,7 +10,7 @@ import { config, isContractConfigured } from '@/lib/config'
 export default function ContractPage() {
   const { admin, loading } = useAdmin()
   const { vasps } = useVasps()
-  const { payments } = usePayments()
+  const { total: paymentTotal } = usePayments()
   const { address } = useWallet()
   const record = deployment as Record<string, string>
 
@@ -51,7 +51,7 @@ export default function ContractPage() {
               </Row>
             )}
             <Row label="Registered VASPs">{vasps.length}</Row>
-            <Row label="Payments">{payments.length}</Row>
+            <Row label="Payments">{paymentTotal}</Row>
           </div>
         )}
 

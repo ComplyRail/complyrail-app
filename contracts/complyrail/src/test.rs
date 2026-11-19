@@ -437,3 +437,92 @@ fn list_thresholds_empty_by_default() {
     let c = ComplyRailClient::new(&env, &id);
     assert_eq!(c.list_thresholds().len(), 0);
 }
+
+// ----- paginated payment reads ---------------------------------------------
+
+/// Submits `n` below-threshold payments from vasp_a to vasp_b (ids 0..n).
+fn submit_many(t: &Setup, n: u32) {
+    for _ in 0..n {
+        t.client
+            .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &100);
+    }
+}
+
+#[test]
+fn list_payments_empty_contract() {
+    let t = setup();
+    assert_eq!(t.client.list_payments(&0, &10).len(), 0);
+    assert_eq!(t.client.list_payments_by_vasp(&t.vasp_a, &0, &10).len(), 0);
+}
+
+#[test]
+fn list_payments_partial_last_page() {
+    let t = setup();
+    submit_many(&t, 3);
+    let first = t.client.list_payments(&0, &2);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first.get(0).unwrap().id, 0);
+    assert_eq!(first.get(1).unwrap().id, 1);
+    let last = t.client.list_payments(&2, &2);
+    assert_eq!(last.len(), 1);
+    assert_eq!(last.get(0).unwrap().id, 2);
+}
+
+#[test]
+fn list_payments_start_past_end_and_zero_limit_are_empty() {
+    let t = setup();
+    submit_many(&t, 2);
+    assert_eq!(t.client.list_payments(&2, &10).len(), 0);
+    assert_eq!(t.client.list_payments(&99, &10).len(), 0);
+    assert_eq!(t.client.list_payments(&0, &0).len(), 0);
+}
+
+#[test]
+fn list_payments_caps_limit_at_max_page_size() {
+    let t = setup();
+    submit_many(&t, 55);
+    assert_eq!(t.client.list_payments(&0, &1_000).len(), MAX_PAGE_SIZE);
+    assert_eq!(t.client.list_payments(&50, &1_000).len(), 5);
+}
+
+#[test]
+fn list_payments_by_vasp_indexes_both_sides() {
+    let t = setup();
+    StellarAssetClient::new(&t.env, &t.token.address).mint(&t.vasp_b, &10_000);
+    submit_many(&t, 2); // ids 0, 1: a -> b
+    t.client
+        .submit_payment(&t.vasp_b, &t.vasp_a, &t.beneficiary, &t.token.address, &100); // id 2
+    let from_a = t.client.list_payments_by_vasp(&t.vasp_a, &0, &10);
+    assert_eq!(from_a.len(), 3);
+    assert_eq!(from_a.get(0).unwrap().id, 0);
+    assert_eq!(from_a.get(1).unwrap().id, 1);
+    assert_eq!(from_a.get(2).unwrap().id, 2);
+    let to_b = t.client.list_payments_by_vasp(&t.vasp_b, &0, &10);
+    assert_eq!(to_b.len(), 3);
+    assert_eq!(to_b.get(0).unwrap().id, 0);
+}
+
+#[test]
+fn list_payments_by_vasp_paginates_its_own_index() {
+    let t = setup();
+    submit_many(&t, 5);
+    let page = t.client.list_payments_by_vasp(&t.vasp_b, &2, &2);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, 2);
+    assert_eq!(page.get(1).unwrap().id, 3);
+    let tail = t.client.list_payments_by_vasp(&t.vasp_b, &4, &2);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.get(0).unwrap().id, 4);
+}
+
+#[test]
+fn list_payments_by_vasp_unknown_vasp_is_empty() {
+    let t = setup();
+    submit_many(&t, 1);
+    assert_eq!(
+        t.client
+            .list_payments_by_vasp(&Address::generate(&t.env), &0, &10)
+            .len(),
+        0
+    );
+}

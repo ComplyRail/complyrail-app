@@ -6,6 +6,8 @@ import {
   mapPayment,
   mapThresholds,
   mapVasp,
+  pageBounds,
+  PAYMENT_PAGE_SIZE,
   sha256Hex,
   unwrap,
   vaspStatusArg,
@@ -82,6 +84,20 @@ describe('mapPayment', () => {
     expect(p.attestationHash).toBe('01'.repeat(32))
     expect(p.ivmsVersion).toBe('IVMS101.2023')
     expect(p.resolvedAt).toBe(300)
+  })
+})
+
+describe('pageBounds', () => {
+  it('takes a full page below the cursor', () => {
+    expect(pageBounds(120)).toEqual({ start: 120 - PAYMENT_PAGE_SIZE, limit: PAYMENT_PAGE_SIZE })
+  })
+
+  it('shrinks the last page to what is left', () => {
+    expect(pageBounds(30)).toEqual({ start: 0, limit: 30 })
+  })
+
+  it('is empty once the cursor reaches zero', () => {
+    expect(pageBounds(0)).toEqual({ start: 0, limit: 0 })
   })
 })
 

@@ -41,6 +41,8 @@ originator VASP                     contract                      beneficiary VA
 | `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
+| `list_payments(start, limit)` | – | ids `start..start+limit`, ascending; `limit` capped at 50 |
+| `list_payments_by_vasp(vasp, start, limit)` | – | that VASP's payments (as originator or beneficiary), in submission order; same cap |
 
 Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
 
