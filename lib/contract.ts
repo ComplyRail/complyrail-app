@@ -190,13 +190,30 @@ async function write<T>(signer: Signer, method: string, args: Record<string, unk
 
 // ----- reads ---------------------------------------------------------------
 
+/** Max simultaneous RPC simulations per list. The public testnet RPC rate-limits bursts. */
+export const RPC_CONCURRENCY = 5
+
+/** Runs `fn` over `items` with at most `limit` calls in flight. Results keep input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
 export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
 
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
-  const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))
+  const raws = await mapLimit(addresses, RPC_CONCURRENCY, address => read<RawVasp>('get_vasp', { address }))
   return raws.map(mapVasp)
 }
 
@@ -212,7 +229,7 @@ export async function getVasp(address: string): Promise<VaspEntry | null> {
 export async function listPayments(limit = 100): Promise<PaymentRecord[]> {
   const count = Number(await read<bigint>('payment_count'))
   const ids = Array.from({ length: Math.min(count, limit) }, (_, i) => BigInt(count - 1 - i))
-  const raws = await Promise.all(ids.map(payment_id => read<RawPayment>('get_payment', { payment_id })))
+  const raws = await mapLimit(ids, RPC_CONCURRENCY, payment_id => read<RawPayment>('get_payment', { payment_id }))
   return raws.map(mapPayment)
 }
 
