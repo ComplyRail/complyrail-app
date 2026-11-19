@@ -238,6 +238,90 @@ fn threshold_above_max_supply_rejected() {
 }
 
 #[test]
+fn threshold_history_records_changes_in_order() {
+    let t = setup(); // setup() records US = 3_000 at ts 1_000
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    t.env.ledger().set_timestamp(2_000);
+    t.client.set_threshold(&a, &us, &4_000);
+    t.env.ledger().set_timestamp(3_000);
+    t.client.set_threshold(&a, &us, &5_000);
+
+    let h = t.client.threshold_history(&a, &us, &0, &10);
+    assert_eq!(h.len(), 3);
+    assert_eq!(
+        h.get(0).unwrap(),
+        ThresholdChange {
+            seq: 0,
+            amount: 3_000,
+            changed_at: 1_000
+        }
+    );
+    assert_eq!(
+        h.get(2).unwrap(),
+        ThresholdChange {
+            seq: 2,
+            amount: 5_000,
+            changed_at: 3_000
+        }
+    );
+}
+
+#[test]
+fn threshold_history_pages() {
+    let t = setup();
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    t.client.set_threshold(&a, &us, &4_000);
+    t.client.set_threshold(&a, &us, &5_000);
+
+    let page = t.client.threshold_history(&a, &us, &1, &1);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().amount, 4_000);
+
+    let tail = t.client.threshold_history(&a, &us, &2, &50);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.get(0).unwrap().amount, 5_000);
+
+    assert_eq!(t.client.threshold_history(&a, &us, &3, &10).len(), 0);
+    assert_eq!(t.client.threshold_history(&a, &us, &0, &0).len(), 0);
+}
+
+#[test]
+fn threshold_history_is_bounded() {
+    let t = setup(); // seq 0 from setup
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    for i in 1..=(MAX_THRESHOLD_HISTORY as i128 + 5) {
+        t.client.set_threshold(&a, &us, &(i * 10));
+    }
+    // 106 changes in total, so seq 0..=5 are trimmed and 6..=105 remain.
+    // A request for more than the cap still returns at most the cap.
+    let h = t.client.threshold_history(&a, &us, &0, &1_000);
+    assert_eq!(h.len(), MAX_THRESHOLD_HISTORY);
+    assert_eq!(h.get(0).unwrap().seq, 6);
+    assert_eq!(h.get(99).unwrap().seq, 105);
+    assert_eq!(h.get(99).unwrap().amount, 1_050);
+}
+
+#[test]
+fn threshold_history_is_per_rule_and_skips_rejected_values() {
+    let t = setup();
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    let star = s(&t.env, "*");
+    t.client.set_threshold(&a, &star, &1_000);
+    // a rejected value is not a change and must not be recorded
+    let r = t.client.try_set_threshold(&a, &us, &-1);
+    assert_eq!(r, Err(Ok(Error::InvalidThreshold)));
+
+    assert_eq!(t.client.threshold_history(&a, &us, &0, &10).len(), 1);
+    assert_eq!(t.client.threshold_history(&a, &star, &0, &10).len(), 1);
+    let sg = s(&t.env, "SG");
+    assert_eq!(t.client.threshold_history(&a, &sg, &0, &10).len(), 0);
+}
+
+#[test]
 fn exact_jurisdiction_threshold_boundary() {
     // US rule is 3_000: "at or above" means 3_000 itself needs attestation.
     let t = setup();
