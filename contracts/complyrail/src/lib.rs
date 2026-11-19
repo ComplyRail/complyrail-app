@@ -18,8 +18,8 @@
 //!   Personal data never touches the ledger, only its hash.
 //!
 //! Every state change emits an event whose topic matches the dashboard's
-//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`,
-//! `pay_rel`, `pay_rej`).
+//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `admin_chg`, `pay_sub`,
+//! `att_sub`, `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
@@ -301,6 +301,15 @@ pub struct ThresholdSet {
     pub removed: bool,
 }
 
+#[contractevent(topics = ["admin_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminChanged {
+    /// The incoming admin, so the audit log can filter by it.
+    #[topic]
+    pub new_admin: Address,
+    pub old_admin: Address,
+}
+
 #[contractevent(topics = ["pay_sub"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentSubmitted {
@@ -365,10 +374,15 @@ impl ComplyRail {
 
     /// Hand admin rights to a new address (both must sign).
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        require_admin(&env)?;
+        let old_admin = require_admin(&env)?;
         new_admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         bump_instance(&env);
+        AdminChanged {
+            new_admin,
+            old_admin,
+        }
+        .publish(&env);
         Ok(())
     }
 

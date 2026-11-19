@@ -9,6 +9,7 @@ const EVENT_TYPES = [
   { value: 'vasp_reg', label: 'VASP Registration' },
   { value: 'vasp_upd', label: 'VASP Update' },
   { value: 'thr_set', label: 'Threshold Set' },
+  { value: 'admin_chg', label: 'Admin Changed' },
   { value: 'pay_sub', label: 'Payment Submitted' },
   { value: 'att_sub', label: 'Attestation Submitted' },
   { value: 'pay_rel', label: 'Payment Released' },

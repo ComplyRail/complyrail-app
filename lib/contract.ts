@@ -95,6 +95,7 @@ const EVENT_LABELS: Record<AuditEventType, string> = {
   vasp_reg: 'VASP registered',
   vasp_upd: 'VASP updated',
   thr_set: 'Threshold set',
+  admin_chg: 'Admin transferred',
   pay_sub: 'Payment submitted',
   att_sub: 'Attestation submitted',
   pay_rel: 'Payment released',

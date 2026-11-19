@@ -504,3 +504,22 @@ fn vasp_list_is_paged_over_many_registrations() {
     assert_eq!(t.client.list_vasps(&300, &10).len(), 0);
     assert_eq!(t.client.list_vasps(&u32::MAX, &u32::MAX).len(), 0);
 }
+
+#[test]
+fn transfer_admin_emits_admin_chg() {
+    use soroban_sdk::{testutils::Events, Event};
+    let t = setup();
+    let new_admin = Address::generate(&t.env);
+    t.client.transfer_admin(&new_admin);
+
+    let expected = AdminChanged {
+        new_admin: new_admin.clone(),
+        old_admin: t.admin.clone(),
+    }
+    .to_xdr(&t.env, &t.client.address);
+    let events = t.env.events().all();
+    assert!(
+        events.events().contains(&expected),
+        "admin_chg event with old and new admin should be emitted"
+    );
+}

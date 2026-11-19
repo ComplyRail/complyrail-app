@@ -106,6 +106,14 @@ describe('mapEvent', () => {
     expect(e!.details!.status).toBe('Revoked')
   })
 
+  it('maps an admin change with its own audit type and both admins', () => {
+    const e = mapEvent({ ...base, topics: ['admin_chg', G2], data: { old_admin: G1 } })
+    expect(e!.type).toBe('admin_chg')
+    expect(e!.description).toBe('Admin transferred')
+    expect(e!.subject).toBe(G2)
+    expect(e!.details!.old_admin).toBe(G1)
+  })
+
   it('ignores events it does not know', () => {
     expect(mapEvent({ ...base, topics: ['transfer', G1], data: 1n })).toBeNull()
   })
