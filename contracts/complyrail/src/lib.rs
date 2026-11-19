@@ -32,6 +32,10 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Bounds for `set_payment_ttl`: 1 hour to 90 days.
+pub const MIN_PAYMENT_TTL: u64 = 60 * 60;
+pub const MAX_PAYMENT_TTL: u64 = 90 * 24 * 60 * 60;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -55,6 +59,15 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// The contract received a different amount than the one requested,
+    /// e.g. the token charges a transfer fee.
+    ReceivedAmountMismatch = 15,
+    /// The asset is not on the admin's allowlist for escrow.
+    AssetNotAllowed = 16,
+    /// New payments and releases are blocked while the contract is paused.
+    Paused = 17,
+    /// Requested TTL is outside [MIN_PAYMENT_TTL, MAX_PAYMENT_TTL].
+    InvalidTtl = 18,
 }
 
 #[contracttype]
@@ -120,6 +133,8 @@ enum DataKey {
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
+    AllowedAsset(Address),
+    Paused,
 }
 
 #[contract]
@@ -206,6 +221,20 @@ fn save_payment(env: &Env, p: &Payment) {
     bump_persistent(env, &key);
 }
 
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    if is_paused(env) {
+        return Err(Error::Paused);
+    }
+    Ok(())
+}
+
 fn require_pending(p: &Payment) -> Result<(), Error> {
     if p.status != PaymentStatus::Pending {
         return Err(Error::PaymentNotPending);
@@ -263,6 +292,29 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+}
+
+#[contractevent(topics = ["ttl_set"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentTtlSet {
+    pub seconds: u64,
+    /// Ledger time from which the new TTL applies. Only payments created at
+    /// or after this time use it; existing payments keep their `expires_at`.
+    pub applies_from: u64,
+}
+
+#[contractevent(topics = ["pause_set"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseSet {
+    pub paused: bool,
+}
+
+#[contractevent(topics = ["ast_set"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetAllowlistSet {
+    #[topic]
+    pub asset: Address,
+    pub allowed: bool,
 }
 
 #[contractevent(topics = ["pay_sub"])]
@@ -468,6 +520,68 @@ impl ComplyRail {
         threshold_for(&env, &asset, &jurisdiction)
     }
 
+    // ----- Asset allowlist -------------------------------------------------
+
+    /// Admin adds or removes `asset` from the set that may be escrowed.
+    /// Payments in any other asset are rejected.
+    pub fn set_asset_allowed(env: Env, asset: Address, allowed: bool) -> Result<(), Error> {
+        require_admin(&env)?;
+        let key = DataKey::AllowedAsset(asset.clone());
+        env.storage().persistent().set(&key, &allowed);
+        bump_persistent(&env, &key);
+        AssetAllowlistSet { asset, allowed }.publish(&env);
+        Ok(())
+    }
+
+    // ----- Payment TTL -----------------------------------------------------
+
+    /// Admin sets how long a held payment may wait before the originator can
+    /// reclaim it. Applies only to payments created after this call.
+    pub fn set_payment_ttl(env: Env, seconds: u64) -> Result<(), Error> {
+        require_admin(&env)?;
+        if !(MIN_PAYMENT_TTL..=MAX_PAYMENT_TTL).contains(&seconds) {
+            return Err(Error::InvalidTtl);
+        }
+        env.storage().instance().set(&DataKey::PaymentTtl, &seconds);
+        bump_instance(&env);
+        PaymentTtlSet {
+            seconds,
+            applies_from: env.ledger().timestamp(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn payment_ttl(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PaymentTtl)
+            .unwrap_or(DEFAULT_PAYMENT_TTL)
+    }
+
+    // ----- Emergency pause -------------------------------------------------
+
+    /// Admin pauses or resumes new payments and releases. `reject_payment`
+    /// and `reclaim_expired` stay available so funds can always be returned.
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
+        require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        bump_instance(&env);
+        PauseSet { paused }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        is_paused(&env)
+    }
+
+    pub fn is_asset_allowed(env: Env, asset: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::AllowedAsset(asset))
+            .unwrap_or(false)
+    }
+
     // ----- Payments --------------------------------------------------------
 
     /// Originating VASP sends `amount` of `asset` towards `beneficiary` at
@@ -482,6 +596,7 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<u64, Error> {
         from_vasp.require_auth();
+        require_not_paused(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -490,12 +605,21 @@ impl ComplyRail {
         }
         let origin = require_active_vasp(&env, &from_vasp)?;
         require_active_vasp(&env, &to_vasp)?;
+        if !Self::is_asset_allowed(env.clone(), asset.clone()) {
+            return Err(Error::AssetNotAllowed);
+        }
 
-        token::Client::new(&env, &asset).transfer(
-            &from_vasp,
-            env.current_contract_address(),
-            &amount,
-        );
+        // Escrow is only safe if the contract really holds `amount` more
+        // afterwards. Fee-on-transfer tokens deliver less, so measure the
+        // balance delta and reject any mismatch (the error reverts the call).
+        let token = token::Client::new(&env, &asset);
+        let me = env.current_contract_address();
+        let balance_before = token.balance(&me);
+        token.transfer(&from_vasp, &me, &amount);
+        let received = token.balance(&me) - balance_before;
+        if received != amount {
+            return Err(Error::ReceivedAmountMismatch);
+        }
 
         let s = env.storage().instance();
         let id: u64 = s.get(&DataKey::NextPaymentId).unwrap_or(0);
@@ -571,6 +695,7 @@ impl ComplyRail {
     /// or the admin releases a held payment to the beneficiary.
     pub fn release_payment(env: Env, payment_id: u64, caller: Address) -> Result<(), Error> {
         caller.require_auth();
+        require_not_paused(&env)?;
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {

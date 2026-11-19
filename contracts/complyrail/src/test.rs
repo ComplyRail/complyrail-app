@@ -58,6 +58,7 @@ fn setup<'a>() -> Setup<'a> {
         &None,
     );
     client.set_threshold(&token_addr, &s(&env, "US"), &3_000);
+    client.set_asset_allowed(&token_addr, &true);
 
     Setup {
         env,
@@ -90,6 +91,7 @@ fn constructor_respects_custom_ttl() {
     StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
     let id = env.register(ComplyRail, (admin.clone(), Some(60u64)));
     let c = ComplyRailClient::new(&env, &id);
+    c.set_asset_allowed(&sac.address(), &true);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
     let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
@@ -377,4 +379,324 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- fee-on-transfer tokens (issue #21) ----------------------------------
+
+/// Minimal SEP-41-style token that keeps 10% of every transfer, so the
+/// recipient receives less than `amount`.
+#[contract]
+pub struct FeeToken;
+
+#[contracttype]
+#[derive(Clone)]
+enum FeeKey {
+    Balance(Address),
+}
+
+#[contractimpl]
+impl FeeToken {
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let k = FeeKey::Balance(to);
+        let b: i128 = env.storage().persistent().get(&k).unwrap_or(0);
+        env.storage().persistent().set(&k, &(b + amount));
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&FeeKey::Balance(id))
+            .unwrap_or(0)
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        let fee = amount / 10;
+        let from_bal = Self::balance(env.clone(), from.clone());
+        env.storage()
+            .persistent()
+            .set(&FeeKey::Balance(from), &(from_bal - amount));
+        let to_bal = Self::balance(env.clone(), to.clone());
+        env.storage()
+            .persistent()
+            .set(&FeeKey::Balance(to), &(to_bal + amount - fee));
+    }
+}
+
+#[test]
+fn fee_on_transfer_asset_is_rejected() {
+    let t = setup();
+    let fee_id = t.env.register(FeeToken, ());
+    let fee = FeeTokenClient::new(&t.env, &fee_id);
+    fee.mint(&t.vasp_a, &1_000);
+    // Allowlisted, so the call reaches the balance check.
+    t.client.set_asset_allowed(&fee_id, &true);
+
+    // 100 requested, 90 arrives: the escrow would be under-collateralised.
+    let r = t
+        .client
+        .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &fee_id, &100);
+    assert_eq!(r, Err(Ok(Error::ReceivedAmountMismatch)));
+
+    // The failed call must leave no trace: originator keeps its funds and
+    // no payment was recorded.
+    assert_eq!(fee.balance(&t.vasp_a), 1_000);
+    assert_eq!(fee.balance(&t.client.address), 0);
+    assert_eq!(t.client.payment_count(), 0);
+}
+
+#[test]
+fn exact_transfer_asset_still_accepted() {
+    let t = setup();
+    // The standard Stellar asset delivers the full amount, so the balance
+    // delta check passes and escrow holds exactly what was requested.
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(t.client.get_payment(&id).amount, 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 5_000);
+}
+
+// ----- asset allowlist (issue #22) -----------------------------------------
+
+#[test]
+fn disallowed_asset_is_rejected() {
+    let t = setup();
+    let other = t
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&t.env))
+        .address();
+    StellarAssetClient::new(&t.env, &other).mint(&t.vasp_a, &1_000);
+    assert!(!t.client.is_asset_allowed(&other));
+
+    let r = t
+        .client
+        .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &other, &100);
+    assert_eq!(r, Err(Ok(Error::AssetNotAllowed)));
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.client.payment_count(), 0);
+}
+
+#[test]
+fn allowlisted_asset_accepted_and_revocable() {
+    let t = setup();
+    assert!(t.client.is_asset_allowed(&t.token.address));
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(t.client.payment_count(), 1);
+
+    t.client.set_asset_allowed(&t.token.address, &false);
+    assert!(!t.client.is_asset_allowed(&t.token.address));
+    let r =
+        t.client
+            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(r, Err(Ok(Error::AssetNotAllowed)));
+}
+
+#[test]
+fn only_admin_can_set_allowlist() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(&env, &id);
+    // No mock_all_auths: the admin's auth is required and not provided.
+    let r = client.try_set_asset_allowed(&sac.address(), &true);
+    assert!(r.is_err());
+    assert!(!client.is_asset_allowed(&sac.address()));
+}
+
+// ----- emergency pause (issue #23) -----------------------------------------
+
+#[test]
+fn pause_blocks_submit_and_release() {
+    let t = setup();
+    // A held payment created before the pause.
+    let held = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&held, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_paused(&true);
+    assert!(t.client.is_paused());
+
+    // submit_payment is blocked and moves no tokens.
+    let r =
+        t.client
+            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(r, Err(Ok(Error::Paused)));
+    assert_eq!(t.client.payment_count(), 1);
+
+    // release_payment is blocked even though the attestation is in place.
+    let r = t.client.try_release_payment(&held, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::Paused)));
+    assert_eq!(t.client.get_payment(&held).status, PaymentStatus::Pending);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn pause_keeps_reject_and_reclaim_available() {
+    let t = setup();
+    let to_reject = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let to_reclaim = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+
+    t.client.set_paused(&true);
+
+    // Funds can still be returned while paused.
+    t.client
+        .reject_payment(&to_reject, &t.vasp_b, &s(&t.env, "under investigation"));
+    assert_eq!(
+        t.client.get_payment(&to_reject).status,
+        PaymentStatus::Rejected
+    );
+
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&to_reclaim);
+    assert_eq!(
+        t.client.get_payment(&to_reclaim).status,
+        PaymentStatus::Reclaimed
+    );
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn unpause_restores_submit_and_release() {
+    let t = setup();
+    let held = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&held, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_paused(&true);
+    t.client.set_paused(&false);
+    assert!(!t.client.is_paused());
+
+    let id = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    t.client.release_payment(&held, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&held).status, PaymentStatus::Released);
+}
+
+#[test]
+fn only_admin_can_pause() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(&env, &id);
+    // No mock_all_auths: the admin's auth is required and not provided.
+    assert!(client.try_set_paused(&true).is_err());
+    assert!(!client.is_paused());
+}
+
+// ----- adjustable payment TTL (issue #24) ----------------------------------
+
+#[test]
+fn ttl_defaults_to_seven_days() {
+    let t = setup();
+    assert_eq!(t.client.payment_ttl(), DEFAULT_PAYMENT_TTL);
+}
+
+#[test]
+fn ttl_bounds_are_enforced() {
+    let t = setup();
+    assert_eq!(
+        t.client.try_set_payment_ttl(&(MIN_PAYMENT_TTL - 1)),
+        Err(Ok(Error::InvalidTtl))
+    );
+    assert_eq!(
+        t.client.try_set_payment_ttl(&(MAX_PAYMENT_TTL + 1)),
+        Err(Ok(Error::InvalidTtl))
+    );
+    assert_eq!(t.client.try_set_payment_ttl(&0), Err(Ok(Error::InvalidTtl)));
+    // The rejected values left the setting untouched.
+    assert_eq!(t.client.payment_ttl(), DEFAULT_PAYMENT_TTL);
+
+    // Both endpoints are inclusive.
+    t.client.set_payment_ttl(&MIN_PAYMENT_TTL);
+    assert_eq!(t.client.payment_ttl(), MIN_PAYMENT_TTL);
+    t.client.set_payment_ttl(&MAX_PAYMENT_TTL);
+    assert_eq!(t.client.payment_ttl(), MAX_PAYMENT_TTL);
+}
+
+#[test]
+fn new_ttl_applies_only_to_new_payments() {
+    let t = setup();
+    // Created under the default 7-day TTL.
+    let old = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let old_expiry = t.client.get_payment(&old).expires_at;
+    assert_eq!(old_expiry, 1_000 + DEFAULT_PAYMENT_TTL);
+
+    // Shorten to 1 hour at t=2_000.
+    t.env.ledger().set_timestamp(2_000);
+    t.client.set_payment_ttl(&MIN_PAYMENT_TTL);
+
+    // The existing payment keeps its original expiry.
+    assert_eq!(t.client.get_payment(&old).expires_at, old_expiry);
+
+    // A payment created after the change gets the new TTL.
+    let new = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(
+        t.client.get_payment(&new).expires_at,
+        2_000 + MIN_PAYMENT_TTL
+    );
+
+    // The old payment is still reclaimable only at its original expiry.
+    t.env.ledger().set_timestamp(2_000 + MIN_PAYMENT_TTL);
+    assert_eq!(
+        t.client.try_reclaim_expired(&old),
+        Err(Ok(Error::PaymentNotExpired))
+    );
+    t.client.reclaim_expired(&new);
+    assert_eq!(t.client.get_payment(&new).status, PaymentStatus::Reclaimed);
+}
+
+#[test]
+fn only_admin_can_set_ttl() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(&env, &id);
+    // No mock_all_auths: the admin's auth is required and not provided.
+    assert!(client.try_set_payment_ttl(&MIN_PAYMENT_TTL).is_err());
+    assert_eq!(client.payment_ttl(), DEFAULT_PAYMENT_TTL);
 }
