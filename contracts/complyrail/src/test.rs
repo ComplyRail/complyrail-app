@@ -378,3 +378,52 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- jurisdiction normalisation & allowlist ------------------------------
+
+#[test]
+fn jurisdiction_is_stored_uppercase() {
+    let t = setup();
+    let c = &t.client;
+    let v = Address::generate(&t.env);
+    c.register_vasp(&v, &s(&t.env, "Lower"), &s(&t.env, "sg"), &key(&t.env, 9), &None);
+    assert_eq!(c.get_vasp(&v).jurisdiction, s(&t.env, "SG"));
+}
+
+#[test]
+fn threshold_lowercase_matches_uppercase_rule() {
+    let t = setup();
+    let a = &t.token.address;
+    // "us" and "US" are the same jurisdiction
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "us")), 3_000);
+    t.client.set_threshold(a, &s(&t.env, "gb"), &500);
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "GB")), 500);
+}
+
+#[test]
+fn unknown_jurisdiction_rejected() {
+    let t = setup();
+    let v = Address::generate(&t.env);
+    assert_eq!(
+        t.client.try_register_vasp(&v, &s(&t.env, "X"), &s(&t.env, "XX"), &key(&t.env, 3), &None),
+        Err(Ok(Error::UnknownJurisdiction))
+    );
+    assert_eq!(
+        t.client.try_set_threshold(&t.token.address, &s(&t.env, "Xyz"), &1),
+        Err(Ok(Error::UnknownJurisdiction))
+    );
+}
+
+#[test]
+fn jurisdiction_length_is_checked() {
+    let t = setup();
+    let v = Address::generate(&t.env);
+    // empty and three-letter codes that are not on the allowlist
+    for code in ["", "USA", "toolong"] {
+        assert_eq!(
+            t.client.try_register_vasp(&v, &s(&t.env, "X"), &s(&t.env, code), &key(&t.env, 4), &None),
+            Err(Ok(Error::UnknownJurisdiction)),
+            "code {code:?} should be rejected"
+        );
+    }
+}

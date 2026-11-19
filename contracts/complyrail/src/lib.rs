@@ -26,6 +26,7 @@ use soroban_sdk::{
     Env, String, Vec,
 };
 
+mod jurisdictions;
 mod test;
 
 /// Default time (seconds) a held payment may wait for release before the
@@ -55,6 +56,7 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    UnknownJurisdiction = 15,
 }
 
 #[contracttype]
@@ -228,6 +230,25 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
+/// Uppercases a jurisdiction code and checks it against the allowlist.
+/// Returns `None` for empty, over-long or unknown codes.
+fn normalise_jurisdiction(env: &Env, raw: &String) -> Option<String> {
+    let len = raw.len();
+    if len == 0 || len > jurisdictions::MAX_LEN {
+        return None;
+    }
+    let n = len as usize;
+    let mut buf = [0u8; 3];
+    raw.copy_into_slice(&mut buf[..n]);
+    buf[..n].make_ascii_uppercase();
+    let code = core::str::from_utf8(&buf[..n]).ok()?;
+    if jurisdictions::ALLOWED.contains(&code) {
+        Some(String::from_str(env, code))
+    } else {
+        None
+    }
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
@@ -347,6 +368,8 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        let jurisdiction =
+            normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         if env
             .storage()
             .persistent()
@@ -452,6 +475,8 @@ impl ComplyRail {
         if amount < 0 {
             return Err(Error::InvalidThreshold);
         }
+        let jurisdiction =
+            normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
         env.storage().persistent().set(&key, &amount);
         bump_persistent(&env, &key);
@@ -464,8 +489,12 @@ impl ComplyRail {
         Ok(())
     }
 
+    /// Unknown or malformed codes read the `"*"` fallback, the same rule a
+    /// payment from an unrecognised jurisdiction would hit.
     pub fn get_threshold(env: Env, asset: Address, jurisdiction: String) -> i128 {
-        threshold_for(&env, &asset, &jurisdiction)
+        let j = normalise_jurisdiction(&env, &jurisdiction)
+            .unwrap_or_else(|| String::from_str(&env, "*"));
+        threshold_for(&env, &asset, &j)
     }
 
     // ----- Payments --------------------------------------------------------
