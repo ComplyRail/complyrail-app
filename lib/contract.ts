@@ -194,6 +194,10 @@ export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
 
+export async function getThresholdAdmin(): Promise<string> {
+  return read<string>('threshold_admin')
+}
+
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
   const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))

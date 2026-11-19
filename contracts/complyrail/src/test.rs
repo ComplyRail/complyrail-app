@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, IntoVal, String,
 };
 
 struct Setup<'a> {
@@ -31,6 +31,7 @@ fn setup<'a>() -> Setup<'a> {
     env.ledger().set_timestamp(1_000);
 
     let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
     let vasp_a = Address::generate(&env);
     let vasp_b = Address::generate(&env);
     let beneficiary = Address::generate(&env);
@@ -41,7 +42,10 @@ fn setup<'a>() -> Setup<'a> {
     StellarAssetClient::new(&env, &token_addr).mint(&vasp_a, &1_000_000);
     let token = TokenClient::new(&env, &token_addr);
 
-    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), None::<u64>),
+    );
     let client = ComplyRailClient::new(&env, &id);
     client.register_vasp(
         &vasp_a,
@@ -84,11 +88,15 @@ fn constructor_respects_custom_ttl() {
     env.mock_all_auths();
     env.ledger().set_timestamp(500);
     let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
     StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
-    let id = env.register(ComplyRail, (admin.clone(), Some(60u64)));
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), Some(60u64)),
+    );
     let c = ComplyRailClient::new(&env, &id);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
@@ -309,7 +317,11 @@ fn expired_vasp_is_inactive() {
 fn register_requires_admin_auth() {
     let env = Env::default();
     let admin = Address::generate(&env);
-    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    let threshold_admin = Address::generate(&env);
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), None::<u64>),
+    );
     // no mock_all_auths(): admin has not signed
     let client = ComplyRailClient::new(&env, &id);
     client.register_vasp(
@@ -518,4 +530,136 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- role separation -----------------------------------------------------
+
+/// Registers a contract with no blanket auth mocking, so each test decides
+/// exactly which role has signed a given call.
+fn role_env() -> (Env, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), None::<u64>),
+    );
+    (env, id, admin, threshold_admin, sac.address())
+}
+
+#[test]
+fn threshold_admin_can_set_threshold() {
+    let (env, id, _admin, thr, token) = role_env();
+    env.mock_auths(&[MockAuth {
+        address: &thr,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "set_threshold",
+            args: (token.clone(), s(&env, "US"), 3_000i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let client = ComplyRailClient::new(&env, &id);
+    client.set_threshold(&token, &s(&env, "US"), &3_000);
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 3_000);
+}
+
+#[test]
+fn admin_cannot_set_threshold() {
+    let (env, id, admin, _thr, token) = role_env();
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "set_threshold",
+            args: (token.clone(), s(&env, "US"), 1i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let client = ComplyRailClient::new(&env, &id);
+    assert!(client
+        .try_set_threshold(&token, &s(&env, "US"), &1)
+        .is_err());
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 0);
+}
+
+#[test]
+fn threshold_admin_cannot_register_vasp() {
+    let (env, id, _admin, thr, _token) = role_env();
+    let vasp = Address::generate(&env);
+    env.mock_auths(&[MockAuth {
+        address: &thr,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "register_vasp",
+            args: (
+                vasp.clone(),
+                s(&env, "Acme"),
+                s(&env, "US"),
+                key(&env, 1),
+                None::<u64>,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let client = ComplyRailClient::new(&env, &id);
+    assert!(client
+        .try_register_vasp(
+            &vasp,
+            &s(&env, "Acme"),
+            &s(&env, "US"),
+            &key(&env, 1),
+            &None
+        )
+        .is_err());
+    assert!(!client.is_vasp_active(&vasp));
+}
+
+#[test]
+fn admin_cannot_remove_threshold() {
+    let t = setup();
+    // seed a per-jurisdiction threshold, then try to remove it as the admin
+    let env = &t.env;
+    env.mock_auths(&[MockAuth {
+        address: &t.admin,
+        invoke: &MockAuthInvoke {
+            contract: &t.client.address,
+            fn_name: "remove_threshold",
+            args: (t.token.address.clone(), s(env, "US")).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(t
+        .client
+        .try_remove_threshold(&t.token.address, &s(env, "US"))
+        .is_err());
+    assert_eq!(
+        t.client.get_threshold(&t.token.address, &s(env, "US")),
+        3_000
+    );
+}
+
+#[test]
+fn threshold_admin_can_remove_threshold() {
+    let t = setup();
+    t.client
+        .remove_threshold(&t.token.address, &s(&t.env, "US"));
+    // no "*" fallback configured, so the jurisdiction now fails closed
+    assert_eq!(
+        t.client.get_threshold(&t.token.address, &s(&t.env, "US")),
+        0
+    );
+}
+
+#[test]
+fn removing_missing_threshold_fails() {
+    let t = setup();
+    assert_eq!(
+        t.client
+            .try_remove_threshold(&t.token.address, &s(&t.env, "SG")),
+        Err(Ok(Error::ThresholdNotFound))
+    );
 }

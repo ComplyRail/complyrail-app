@@ -17,9 +17,12 @@
 //!   IVMS101 payload exchanged off-chain, plus the IVMS101 version string.
 //!   Personal data never touches the ledger, only its hash.
 //!
+//! Two roles: the **admin** runs the VASP registry and the **threshold admin**
+//! sets Travel Rule thresholds, so one compromised key cannot do both.
+//!
 //! Every state change emits an event whose topic matches the dashboard's
-//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`,
-//! `pay_rel`, `pay_rej`).
+//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `thr_rm`, `pay_sub`,
+//! `att_sub`, `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
@@ -63,6 +66,8 @@ pub enum Error {
     ReasonTooLong = 17,
     /// A supplied value is malformed, e.g. an expiry that is already past.
     InvalidInput = 18,
+    /// `remove_threshold` was called for a jurisdiction with no threshold.
+    ThresholdNotFound = 19,
 }
 
 /// Upper bound on the reason attached to a status change, in bytes.
@@ -125,6 +130,7 @@ pub struct Payment {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    ThresholdAdmin,
     PaymentTtl,
     NextPaymentId,
     VaspList,
@@ -161,6 +167,19 @@ fn admin(env: &Env) -> Result<Address, Error> {
 
 fn require_admin(env: &Env) -> Result<Address, Error> {
     let a = admin(env)?;
+    a.require_auth();
+    Ok(a)
+}
+
+/// Travel Rule thresholds are governed by a separate role from the VASP
+/// registry, so compromising one key does not let an attacker both admit a
+/// VASP and lower the threshold that guards against it.
+fn require_threshold_admin(env: &Env) -> Result<Address, Error> {
+    let a: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::ThresholdAdmin)
+        .ok_or(Error::NotInitialized)?;
     a.require_auth();
     Ok(a)
 }
@@ -289,6 +308,14 @@ pub struct ThresholdSet {
     pub amount: i128,
 }
 
+#[contractevent(topics = ["thr_rm"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdRemoved {
+    #[topic]
+    pub asset: Address,
+    pub jurisdiction: String,
+}
+
 #[contractevent(topics = ["pay_sub"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentSubmitted {
@@ -335,9 +362,15 @@ impl ComplyRail {
     /// `admin` does not need to sign: the deployer chooses it.
     /// `payment_ttl` is how long (seconds) a held payment can wait before the
     /// originator may reclaim it; pass `None` for 7 days.
-    pub fn __constructor(env: Env, admin: Address, payment_ttl: Option<u64>) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        threshold_admin: Address,
+        payment_ttl: Option<u64>,
+    ) {
         let s = env.storage().instance();
         s.set(&DataKey::Admin, &admin);
+        s.set(&DataKey::ThresholdAdmin, &threshold_admin);
         s.set(
             &DataKey::PaymentTtl,
             &payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL),
@@ -495,7 +528,7 @@ impl ComplyRail {
         jurisdiction: String,
         amount: i128,
     ) -> Result<(), Error> {
-        require_admin(&env)?;
+        require_threshold_admin(&env)?;
         if amount < 0 {
             return Err(Error::InvalidThreshold);
         }
@@ -506,6 +539,23 @@ impl ComplyRail {
             asset,
             jurisdiction,
             amount,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Removes a per-jurisdiction threshold. Afterwards that jurisdiction falls
+    /// back to `"*"`, or to 0 (every payment held) if there is no fallback.
+    pub fn remove_threshold(env: Env, asset: Address, jurisdiction: String) -> Result<(), Error> {
+        require_threshold_admin(&env)?;
+        let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::ThresholdNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        ThresholdRemoved {
+            asset,
+            jurisdiction,
         }
         .publish(&env);
         Ok(())
