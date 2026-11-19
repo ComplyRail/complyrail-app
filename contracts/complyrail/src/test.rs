@@ -509,3 +509,109 @@ fn only_admin_can_set_allowlist() {
     assert!(r.is_err());
     assert!(!client.is_asset_allowed(&sac.address()));
 }
+
+// ----- emergency pause (issue #23) -----------------------------------------
+
+#[test]
+fn pause_blocks_submit_and_release() {
+    let t = setup();
+    // A held payment created before the pause.
+    let held = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&held, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_paused(&true);
+    assert!(t.client.is_paused());
+
+    // submit_payment is blocked and moves no tokens.
+    let r =
+        t.client
+            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(r, Err(Ok(Error::Paused)));
+    assert_eq!(t.client.payment_count(), 1);
+
+    // release_payment is blocked even though the attestation is in place.
+    let r = t.client.try_release_payment(&held, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::Paused)));
+    assert_eq!(t.client.get_payment(&held).status, PaymentStatus::Pending);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn pause_keeps_reject_and_reclaim_available() {
+    let t = setup();
+    let to_reject = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let to_reclaim = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+
+    t.client.set_paused(&true);
+
+    // Funds can still be returned while paused.
+    t.client
+        .reject_payment(&to_reject, &t.vasp_b, &s(&t.env, "under investigation"));
+    assert_eq!(
+        t.client.get_payment(&to_reject).status,
+        PaymentStatus::Rejected
+    );
+
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&to_reclaim);
+    assert_eq!(
+        t.client.get_payment(&to_reclaim).status,
+        PaymentStatus::Reclaimed
+    );
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn unpause_restores_submit_and_release() {
+    let t = setup();
+    let held = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&held, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_paused(&true);
+    t.client.set_paused(&false);
+    assert!(!t.client.is_paused());
+
+    let id = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    t.client.release_payment(&held, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&held).status, PaymentStatus::Released);
+}
+
+#[test]
+fn only_admin_can_pause() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(&env, &id);
+    // No mock_all_auths: the admin's auth is required and not provided.
+    assert!(client.try_set_paused(&true).is_err());
+    assert!(!client.is_paused());
+}

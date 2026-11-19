@@ -60,6 +60,8 @@ pub enum Error {
     ReceivedAmountMismatch = 15,
     /// The asset is not on the admin's allowlist for escrow.
     AssetNotAllowed = 16,
+    /// New payments and releases are blocked while the contract is paused.
+    Paused = 17,
 }
 
 #[contracttype]
@@ -126,6 +128,7 @@ enum DataKey {
     Threshold(Address, String),
     Payment(u64),
     AllowedAsset(Address),
+    Paused,
 }
 
 #[contract]
@@ -212,6 +215,20 @@ fn save_payment(env: &Env, p: &Payment) {
     bump_persistent(env, &key);
 }
 
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    if is_paused(env) {
+        return Err(Error::Paused);
+    }
+    Ok(())
+}
+
 fn require_pending(p: &Payment) -> Result<(), Error> {
     if p.status != PaymentStatus::Pending {
         return Err(Error::PaymentNotPending);
@@ -269,6 +286,12 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+}
+
+#[contractevent(topics = ["pause_set"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseSet {
+    pub paused: bool,
 }
 
 #[contractevent(topics = ["ast_set"])]
@@ -495,6 +518,22 @@ impl ComplyRail {
         Ok(())
     }
 
+    // ----- Emergency pause -------------------------------------------------
+
+    /// Admin pauses or resumes new payments and releases. `reject_payment`
+    /// and `reclaim_expired` stay available so funds can always be returned.
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
+        require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        bump_instance(&env);
+        PauseSet { paused }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        is_paused(&env)
+    }
+
     pub fn is_asset_allowed(env: Env, asset: Address) -> bool {
         env.storage()
             .persistent()
@@ -516,6 +555,7 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<u64, Error> {
         from_vasp.require_auth();
+        require_not_paused(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -614,6 +654,7 @@ impl ComplyRail {
     /// or the admin releases a held payment to the beneficiary.
     pub fn release_payment(env: Env, payment_id: u64, caller: Address) -> Result<(), Error> {
         caller.require_auth();
+        require_not_paused(&env)?;
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {
