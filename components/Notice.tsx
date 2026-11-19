@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react'
 import { explorerBase, isContractConfigured } from '@/lib/config'
 import { useWallet } from '@/components/WalletProvider'
+import { friendlyError } from '@/lib/errors'
 
 export function NotDeployedBanner() {
   if (isContractConfigured) return null
@@ -48,30 +49,7 @@ export function useTx() {
   return { run, pending, error, done, signedIn: !!signer }
 }
 
-const CONTRACT_ERRORS: Record<number, string> = {
-  2: 'Contract not initialised',
-  3: 'This VASP is already registered',
-  4: 'VASP not found',
-  5: 'A VASP in this payment is not active (suspended, revoked or expired)',
-  6: 'Amount must be greater than zero',
-  7: 'Payment not found',
-  8: 'This payment has already been resolved',
-  9: 'An attestation is required before release',
-  10: 'An attestation was already submitted',
-  11: 'Only the beneficiary VASP or the admin can do this',
-  12: 'This payment has not expired yet',
-  13: 'Sender and receiver VASP must be different',
-  14: 'Threshold must be zero or more',
-}
-
-export function friendlyError(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e)
-  const m = msg.match(/Error\(Contract, #(\d+)\)/)
-  if (m && CONTRACT_ERRORS[Number(m[1])]) return CONTRACT_ERRORS[Number(m[1])]
-  if (/not authorized|require_auth|InvalidAction/i.test(msg)) return 'Your wallet is not authorised for this action'
-  if (/User declined|rejected/i.test(msg)) return 'Request cancelled in wallet'
-  return msg.length > 300 ? msg.slice(0, 300) + '…' : msg
-}
+export { friendlyError }
 
 export function TxStatus({ pending, error, done }: { pending: boolean; error: string | null; done: string | null }) {
   if (pending) return <p className="text-sm text-muted-foreground">Waiting for wallet signature and confirmation…</p>
