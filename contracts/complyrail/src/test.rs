@@ -615,3 +615,88 @@ fn only_admin_can_pause() {
     assert!(client.try_set_paused(&true).is_err());
     assert!(!client.is_paused());
 }
+
+// ----- adjustable payment TTL (issue #24) ----------------------------------
+
+#[test]
+fn ttl_defaults_to_seven_days() {
+    let t = setup();
+    assert_eq!(t.client.payment_ttl(), DEFAULT_PAYMENT_TTL);
+}
+
+#[test]
+fn ttl_bounds_are_enforced() {
+    let t = setup();
+    assert_eq!(
+        t.client.try_set_payment_ttl(&(MIN_PAYMENT_TTL - 1)),
+        Err(Ok(Error::InvalidTtl))
+    );
+    assert_eq!(
+        t.client.try_set_payment_ttl(&(MAX_PAYMENT_TTL + 1)),
+        Err(Ok(Error::InvalidTtl))
+    );
+    assert_eq!(t.client.try_set_payment_ttl(&0), Err(Ok(Error::InvalidTtl)));
+    // The rejected values left the setting untouched.
+    assert_eq!(t.client.payment_ttl(), DEFAULT_PAYMENT_TTL);
+
+    // Both endpoints are inclusive.
+    t.client.set_payment_ttl(&MIN_PAYMENT_TTL);
+    assert_eq!(t.client.payment_ttl(), MIN_PAYMENT_TTL);
+    t.client.set_payment_ttl(&MAX_PAYMENT_TTL);
+    assert_eq!(t.client.payment_ttl(), MAX_PAYMENT_TTL);
+}
+
+#[test]
+fn new_ttl_applies_only_to_new_payments() {
+    let t = setup();
+    // Created under the default 7-day TTL.
+    let old = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let old_expiry = t.client.get_payment(&old).expires_at;
+    assert_eq!(old_expiry, 1_000 + DEFAULT_PAYMENT_TTL);
+
+    // Shorten to 1 hour at t=2_000.
+    t.env.ledger().set_timestamp(2_000);
+    t.client.set_payment_ttl(&MIN_PAYMENT_TTL);
+
+    // The existing payment keeps its original expiry.
+    assert_eq!(t.client.get_payment(&old).expires_at, old_expiry);
+
+    // A payment created after the change gets the new TTL.
+    let new = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(
+        t.client.get_payment(&new).expires_at,
+        2_000 + MIN_PAYMENT_TTL
+    );
+
+    // The old payment is still reclaimable only at its original expiry.
+    t.env.ledger().set_timestamp(2_000 + MIN_PAYMENT_TTL);
+    assert_eq!(
+        t.client.try_reclaim_expired(&old),
+        Err(Ok(Error::PaymentNotExpired))
+    );
+    t.client.reclaim_expired(&new);
+    assert_eq!(t.client.get_payment(&new).status, PaymentStatus::Reclaimed);
+}
+
+#[test]
+fn only_admin_can_set_ttl() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(&env, &id);
+    // No mock_all_auths: the admin's auth is required and not provided.
+    assert!(client.try_set_payment_ttl(&MIN_PAYMENT_TTL).is_err());
+    assert_eq!(client.payment_ttl(), DEFAULT_PAYMENT_TTL);
+}

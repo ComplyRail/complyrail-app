@@ -32,6 +32,10 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Bounds for `set_payment_ttl`: 1 hour to 90 days.
+pub const MIN_PAYMENT_TTL: u64 = 60 * 60;
+pub const MAX_PAYMENT_TTL: u64 = 90 * 24 * 60 * 60;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -62,6 +66,8 @@ pub enum Error {
     AssetNotAllowed = 16,
     /// New payments and releases are blocked while the contract is paused.
     Paused = 17,
+    /// Requested TTL is outside [MIN_PAYMENT_TTL, MAX_PAYMENT_TTL].
+    InvalidTtl = 18,
 }
 
 #[contracttype]
@@ -286,6 +292,15 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+}
+
+#[contractevent(topics = ["ttl_set"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentTtlSet {
+    pub seconds: u64,
+    /// Ledger time from which the new TTL applies. Only payments created at
+    /// or after this time use it; existing payments keep their `expires_at`.
+    pub applies_from: u64,
 }
 
 #[contractevent(topics = ["pause_set"])]
@@ -516,6 +531,32 @@ impl ComplyRail {
         bump_persistent(&env, &key);
         AssetAllowlistSet { asset, allowed }.publish(&env);
         Ok(())
+    }
+
+    // ----- Payment TTL -----------------------------------------------------
+
+    /// Admin sets how long a held payment may wait before the originator can
+    /// reclaim it. Applies only to payments created after this call.
+    pub fn set_payment_ttl(env: Env, seconds: u64) -> Result<(), Error> {
+        require_admin(&env)?;
+        if !(MIN_PAYMENT_TTL..=MAX_PAYMENT_TTL).contains(&seconds) {
+            return Err(Error::InvalidTtl);
+        }
+        env.storage().instance().set(&DataKey::PaymentTtl, &seconds);
+        bump_instance(&env);
+        PaymentTtlSet {
+            seconds,
+            applies_from: env.ledger().timestamp(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn payment_ttl(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PaymentTtl)
+            .unwrap_or(DEFAULT_PAYMENT_TTL)
     }
 
     // ----- Emergency pause -------------------------------------------------
