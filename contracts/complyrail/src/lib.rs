@@ -299,6 +299,9 @@ pub struct PaymentRejected {
     #[topic]
     pub id: u64,
     pub reason: String,
+    /// Optional sha256 of the evidence supporting the rejection (see
+    /// `reject_payment` for the expected format). `None` for expiry reclaims.
+    pub evidence_hash: Option<BytesN<32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -591,11 +594,19 @@ impl ComplyRail {
 
     /// Beneficiary VASP or admin rejects a held payment; funds go back to the
     /// originating VASP. `reason` is emitted for the audit trail.
+    ///
+    /// `evidence_hash` is optional. When given it must be the sha256 of the
+    /// evidence document that justified the rejection, serialised as UTF-8
+    /// JSON and exchanged off-chain between the VASPs and the admin. Only the
+    /// hash is emitted in `pay_rej`; the document itself, and any personal
+    /// data in it, never touches the ledger. Anyone reading the audit log can
+    /// check a disclosed document by hashing it and comparing.
     pub fn reject_payment(
         env: Env,
         payment_id: u64,
         caller: Address,
         reason: String,
+        evidence_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
         caller.require_auth();
         let mut p = load_payment(&env, payment_id)?;
@@ -608,6 +619,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason,
+            evidence_hash,
         }
         .publish(&env);
         Ok(())
@@ -627,6 +639,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
+            evidence_hash: None,
         }
         .publish(&env);
         Ok(())

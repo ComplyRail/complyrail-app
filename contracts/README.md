@@ -37,7 +37,7 @@ originator VASP                     contract                      beneficiary VA
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |
-| `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
+| `reject_payment(id, caller, reason, evidence_hash?)` | to_vasp or admin | refunds originator; `evidence_hash` is the sha256 of the off-chain evidence document (UTF-8 JSON), emitted in `pay_rej` |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
 

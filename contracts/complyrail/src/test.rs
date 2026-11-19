@@ -1,10 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::{testutils::Events as _, xdr};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, String, TryFromVal,
 };
 
 struct Setup<'a> {
@@ -268,8 +269,12 @@ fn reject_refunds_originator() {
         &t.token.address,
         &5_000,
     );
-    t.client
-        .reject_payment(&id, &t.vasp_b, &s(&t.env, "beneficiary name mismatch"));
+    t.client.reject_payment(
+        &id,
+        &t.vasp_b,
+        &s(&t.env, "beneficiary name mismatch"),
+        &None,
+    );
     assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
     assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
     // cannot act on a resolved payment
@@ -377,4 +382,96 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- event assertions ----------------------------------------------------
+
+/// Asserts that the most recent event emitted by the contract is exactly
+/// `expected`: same topics, same data, same emitting contract.
+fn assert_last_event(t: &Setup, expected: &impl soroban_sdk::Event) {
+    let env = &t.env;
+    let all = env.events().all().filter_by_contract(&t.client.address);
+    let last = all.events().last().expect("no events emitted");
+    let xdr::ContractEventBody::V0(body) = &last.body;
+    let topics = expected.topics(env);
+    assert_eq!(body.topics.len() as u32, topics.len());
+    for (i, topic) in topics.iter().enumerate() {
+        assert_eq!(
+            body.topics[i],
+            xdr::ScVal::try_from_val(env, &topic).unwrap()
+        );
+    }
+    assert_eq!(
+        body.data,
+        xdr::ScVal::try_from_val(env, &expected.data(env)).unwrap()
+    );
+}
+
+// ----- rejection evidence (#45) --------------------------------------------
+
+#[test]
+fn reject_with_evidence_hash_emits_it() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let reason = s(&t.env, "beneficiary name mismatch");
+    t.client
+        .reject_payment(&id, &t.vasp_b, &reason, &Some(key(&t.env, 9)));
+    assert_last_event(
+        &t,
+        &PaymentRejected {
+            id,
+            reason,
+            evidence_hash: Some(key(&t.env, 9)),
+        },
+    );
+}
+
+#[test]
+fn reject_without_evidence_hash_emits_none() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let reason = s(&t.env, "duplicate");
+    t.client.reject_payment(&id, &t.vasp_b, &reason, &None);
+    assert_last_event(
+        &t,
+        &PaymentRejected {
+            id,
+            reason,
+            evidence_hash: None,
+        },
+    );
+}
+
+#[test]
+fn expiry_reclaim_emits_no_evidence_hash() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+    assert_last_event(
+        &t,
+        &PaymentRejected {
+            id,
+            reason: s(&t.env, "expired"),
+            evidence_hash: None,
+        },
+    );
 }
