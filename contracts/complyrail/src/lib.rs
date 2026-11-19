@@ -22,8 +22,8 @@
 //! `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
-    Env, String, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
+    Address, BytesN, Env, String, Vec,
 };
 
 mod test;
@@ -31,6 +31,18 @@ mod test;
 /// Default time (seconds) a held payment may wait for release before the
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
+
+/// Upper bound for the payment TTL: 100 years. Keeps `now + ttl` far away
+/// from `u64::MAX` for any realistic ledger time.
+pub const MAX_PAYMENT_TTL: u64 = 100 * 365 * 24 * 60 * 60;
+
+/// Maximum byte lengths of free-text fields. They are stored on-chain and
+/// emitted in events, so unbounded values would raise ledger cost and break
+/// indexers. The dashboard mirrors these limits in `lib/limits.ts`.
+pub const MAX_NAME_LEN: u32 = 128;
+pub const MAX_JURISDICTION_LEN: u32 = 8;
+pub const MAX_IVMS_VERSION_LEN: u32 = 32;
+pub const MAX_REASON_LEN: u32 = 256;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
@@ -55,6 +67,12 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// Constructor TTL is above `MAX_PAYMENT_TTL`.
+    InvalidTtl = 15,
+    /// `now + ttl` does not fit in a u64.
+    ExpiryOverflow = 16,
+    /// A free-text field is empty, too long or otherwise malformed.
+    InvalidInput = 17,
 }
 
 #[contracttype]
@@ -101,6 +119,9 @@ pub struct Payment {
     pub amount: i128,
     pub status: PaymentStatus,
     pub requires_attestation: bool,
+    /// Optional reference from the originator's own system (e.g. an anchor's
+    /// transfer id), so on-chain payments can be matched to off-chain records.
+    pub external_ref: Option<BytesN<32>>,
     /// sha256 of the IVMS101 payload exchanged off-chain.
     pub attestation_hash: Option<BytesN<32>>,
     pub ivms_version: Option<String>,
@@ -228,6 +249,28 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
+/// Rejects a reason that is empty or made only of ASCII whitespace
+/// (space, tab, CR, LF, form feed). Length is already bounded by
+/// `MAX_REASON_LEN`, so a stack buffer of that size is enough.
+fn check_reason_not_blank(reason: &String) -> Result<(), Error> {
+    let n = reason.len() as usize;
+    let mut buf = [0u8; MAX_REASON_LEN as usize];
+    reason.copy_into_slice(&mut buf[..n]);
+    // `all` is true for an empty slice, so empty reasons are rejected here too.
+    if buf[..n].iter().all(|b| b.is_ascii_whitespace()) {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
+}
+
+/// Rejects a free-text value longer than `max` bytes.
+fn check_max_len(value: &String, max: u32) -> Result<(), Error> {
+    if value.len() > max {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
@@ -274,6 +317,7 @@ pub struct PaymentSubmitted {
     pub to_vasp: Address,
     pub amount: i128,
     pub requires_attestation: bool,
+    pub external_ref: Option<BytesN<32>>,
 }
 
 #[contractevent(topics = ["att_sub"])]
@@ -311,13 +355,16 @@ impl ComplyRail {
     /// `admin` does not need to sign: the deployer chooses it.
     /// `payment_ttl` is how long (seconds) a held payment can wait before the
     /// originator may reclaim it; pass `None` for 7 days.
+    ///
+    /// Panics with `Error::InvalidTtl` if `payment_ttl` exceeds `MAX_PAYMENT_TTL`.
     pub fn __constructor(env: Env, admin: Address, payment_ttl: Option<u64>) {
+        let ttl = payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL);
+        if ttl > MAX_PAYMENT_TTL {
+            panic_with_error!(&env, Error::InvalidTtl);
+        }
         let s = env.storage().instance();
         s.set(&DataKey::Admin, &admin);
-        s.set(
-            &DataKey::PaymentTtl,
-            &payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL),
-        );
+        s.set(&DataKey::PaymentTtl, &ttl);
         s.set(&DataKey::NextPaymentId, &0u64);
         s.set(&DataKey::VaspList, &Vec::<Address>::new(&env));
         bump_instance(&env);
@@ -347,6 +394,8 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        check_max_len(&name, MAX_NAME_LEN)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         if env
             .storage()
             .persistent()
@@ -449,6 +498,7 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         if amount < 0 {
             return Err(Error::InvalidThreshold);
         }
@@ -472,7 +522,9 @@ impl ComplyRail {
 
     /// Originating VASP sends `amount` of `asset` towards `beneficiary` at
     /// `to_vasp`. Tokens move into escrow. Below-threshold payments settle in
-    /// the same call; others stay `Pending`. Returns the payment id.
+    /// the same call; others stay `Pending`. `external_ref` is an optional
+    /// off-chain reference stored with the payment and emitted in
+    /// `PaymentSubmitted`. Returns the payment id.
     pub fn submit_payment(
         env: Env,
         from_vasp: Address,
@@ -480,6 +532,7 @@ impl ComplyRail {
         beneficiary: Address,
         asset: Address,
         amount: i128,
+        external_ref: Option<BytesN<32>>,
     ) -> Result<u64, Error> {
         from_vasp.require_auth();
         if amount <= 0 {
@@ -504,6 +557,7 @@ impl ComplyRail {
         bump_instance(&env);
 
         let now = env.ledger().timestamp();
+        let expires_at = now.checked_add(ttl).ok_or(Error::ExpiryOverflow)?;
         let requires_attestation = amount >= threshold_for(&env, &asset, &origin.jurisdiction);
         let mut p = Payment {
             id,
@@ -514,11 +568,12 @@ impl ComplyRail {
             amount,
             status: PaymentStatus::Pending,
             requires_attestation,
+            external_ref: external_ref.clone(),
             attestation_hash: None,
             ivms_version: None,
             attested_at: None,
             created_at: now,
-            expires_at: now + ttl,
+            expires_at,
             resolved_at: None,
         };
 
@@ -528,6 +583,7 @@ impl ComplyRail {
             to_vasp,
             amount,
             requires_attestation,
+            external_ref,
         }
         .publish(&env);
 
@@ -548,6 +604,7 @@ impl ComplyRail {
         attestation_hash: BytesN<32>,
         ivms_version: String,
     ) -> Result<(), Error> {
+        check_max_len(&ivms_version, MAX_IVMS_VERSION_LEN)?;
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
         require_pending(&p)?;
@@ -590,7 +647,8 @@ impl ComplyRail {
     }
 
     /// Beneficiary VASP or admin rejects a held payment; funds go back to the
-    /// originating VASP. `reason` is emitted for the audit trail.
+    /// originating VASP. `reason` is emitted for the audit trail and must be
+    /// non-blank (`Error::InvalidInput` if empty or whitespace-only).
     pub fn reject_payment(
         env: Env,
         payment_id: u64,
@@ -598,6 +656,8 @@ impl ComplyRail {
         reason: String,
     ) -> Result<(), Error> {
         caller.require_auth();
+        check_max_len(&reason, MAX_REASON_LEN)?;
+        check_reason_not_blank(&reason)?;
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {

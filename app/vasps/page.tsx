@@ -9,6 +9,7 @@ import { formatAddress } from '@/lib/format'
 import { JURISDICTIONS } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { registerVasp, setVaspStatus } from '@/lib/contract'
+import { FIELD_LIMITS, lengthError } from '@/lib/limits'
 import { VaspStatus } from '@/lib/types'
 
 const emptyForm = { address: '', name: '', jurisdiction: '', publicKeyHex: '', expiresDays: '' }
@@ -27,7 +28,7 @@ export default function VaspsPage() {
       ? 'Address must be a Stellar public key (G…)'
       : form.publicKeyHex && !/^[0-9a-fA-F]{64}$/.test(form.publicKeyHex)
         ? 'Encryption key must be 32 bytes as 64 hex characters'
-        : null
+        : lengthError('Legal name', form.name, FIELD_LIMITS.name)
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -74,7 +75,7 @@ export default function VaspsPage() {
                 onChange={e => setForm({ ...form, address: e.target.value.trim() })}
                 className="px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
               <input required placeholder="Legal name" value={form.name}
-                onChange={e => setForm({ ...form, name: e.target.value })}
+                onChange={e => setForm({ ...form, name: e.target.value })} maxLength={FIELD_LIMITS.name}
                 className="px-3 py-2 border border-border rounded bg-background" />
               <select required value={form.jurisdiction} onChange={e => setForm({ ...form, jurisdiction: e.target.value })}
                 className="px-3 py-2 border border-border rounded bg-background">

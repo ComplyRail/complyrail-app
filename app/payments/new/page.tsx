@@ -10,6 +10,7 @@ import { toUnits } from '@/lib/format'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { submitPayment } from '@/lib/contract'
 import { VaspStatus } from '@/lib/types'
+import { externalRefArg } from '@/lib/contract'
 
 export default function NewPaymentPage() {
   const router = useRouter()
@@ -17,7 +18,13 @@ export default function NewPaymentPage() {
   const { address } = useWallet()
   const { role } = useRole(address)
   const tx = useTx()
-  const [form, setForm] = useState({ toVasp: '', beneficiary: '', asset: ASSETS[0].contractId, amount: '' })
+  const [form, setForm] = useState({
+    toVasp: '',
+    beneficiary: '',
+    asset: ASSETS[0].contractId,
+    amount: '',
+    externalRef: '',
+  })
   const [formError, setFormError] = useState<string | null>(null)
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -36,6 +43,11 @@ export default function NewPaymentPage() {
       return setFormError(err instanceof Error ? err.message : 'Invalid amount')
     }
     if (amount <= 0n) return setFormError('Amount must be greater than zero')
+    try {
+      externalRefArg(form.externalRef)
+    } catch (err) {
+      return setFormError(err instanceof Error ? err.message : 'Invalid external reference')
+    }
     const id = await tx.run('Payment submitted', s => submitPayment(s, { ...form, amount }))
     if (id !== undefined) router.push(`/payments/view?id=${id}`)
   }
@@ -84,6 +96,11 @@ export default function NewPaymentPage() {
               </Field>
             </div>
           </div>
+
+          <Field label="External reference (optional)">
+            <input name="externalRef" value={form.externalRef} onChange={onChange} placeholder="64 hex characters"
+              className={`${inputCls} font-mono text-sm`} />
+          </Field>
 
           {formError && <p className="text-sm text-red-600">{formError}</p>}
           <TxStatus {...tx} />

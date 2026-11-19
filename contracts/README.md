@@ -27,7 +27,7 @@ originator VASP                     contract                      beneficiary VA
 
 | Function | Auth | Notes |
 |---|---|---|
-| `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days |
+| `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days, max 100 years (larger values are rejected, so `now + ttl` cannot overflow) |
 | `transfer_admin(new_admin)` | admin + new admin | |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
@@ -37,7 +37,7 @@ originator VASP                     contract                      beneficiary VA
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |
-| `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
+| `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator; `reason` must not be empty or whitespace-only (`InvalidInput`), max 256 bytes |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
 
