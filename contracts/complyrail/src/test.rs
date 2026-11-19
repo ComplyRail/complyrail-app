@@ -551,3 +551,43 @@ fn pending_index_paging_and_bounds() {
         "limit is clamped, not rejected"
     );
 }
+
+// ----- attestation hash lookup ---------------------------------------------
+
+#[test]
+fn find_payment_by_attestation_returns_owner() {
+    let t = setup();
+    let id = submit_held(&t);
+    assert_eq!(t.client.find_payment_by_attestation(&key(&t.env, 9)), None);
+
+    t.client
+        .submit_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2023"));
+    assert_eq!(
+        t.client.find_payment_by_attestation(&key(&t.env, 9)),
+        Some(id)
+    );
+    assert_eq!(t.client.find_payment_by_attestation(&key(&t.env, 8)), None);
+}
+
+#[test]
+fn duplicate_attestation_hash_keeps_first_owner() {
+    let t = setup();
+    let first = submit_held(&t);
+    let second = submit_held(&t);
+
+    // Same IVMS101 hash recorded on two different payments.
+    t.client
+        .submit_attestation(&first, &key(&t.env, 5), &s(&t.env, "IVMS101.2023"));
+    t.client
+        .submit_attestation(&second, &key(&t.env, 5), &s(&t.env, "IVMS101.2023"));
+
+    // Lookup still points at the first payment; the second keeps its own hash.
+    assert_eq!(
+        t.client.find_payment_by_attestation(&key(&t.env, 5)),
+        Some(first)
+    );
+    assert_eq!(
+        t.client.get_payment(&second).attestation_hash,
+        Some(key(&t.env, 5))
+    );
+}

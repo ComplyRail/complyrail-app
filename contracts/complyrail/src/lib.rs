@@ -128,6 +128,9 @@ enum DataKey {
     VaspPayments(Address),
     /// Ids of payments currently held in escrow, in submission order.
     PendingPayments,
+    /// Reverse lookup from an attestation hash to the payment that first
+    /// recorded it.
+    AttestationOwner(BytesN<32>),
 }
 
 #[contract]
@@ -627,6 +630,13 @@ impl ComplyRail {
         p.ivms_version = Some(ivms_version.clone());
         p.attested_at = Some(env.ledger().timestamp());
         save_payment(&env, &p);
+        // The first payment to record a hash keeps the reverse lookup, so a
+        // later payment reusing the same hash cannot take it over.
+        let owner_key = DataKey::AttestationOwner(attestation_hash.clone());
+        if !env.storage().persistent().has(&owner_key) {
+            env.storage().persistent().set(&owner_key, &payment_id);
+            bump_persistent(&env, &owner_key);
+        }
         AttestationSubmitted {
             id: payment_id,
             hash: attestation_hash,
@@ -715,6 +725,17 @@ impl ComplyRail {
             .get(&DataKey::VaspPayments(vasp))
             .unwrap_or_else(|| Vec::new(&env));
         page_of(&env, &ids, start, limit)
+    }
+
+    /// The payment that first recorded `attestation_hash`, if any. Lets a VASP
+    /// that holds an IVMS101 payload find the payment it belongs to.
+    pub fn find_payment_by_attestation(env: Env, attestation_hash: BytesN<32>) -> Option<u64> {
+        let key = DataKey::AttestationOwner(attestation_hash);
+        let id: Option<u64> = env.storage().persistent().get(&key);
+        if id.is_some() {
+            bump_persistent(&env, &key);
+        }
+        id
     }
 
     /// Payment ids currently held in escrow (awaiting attestation and/or
