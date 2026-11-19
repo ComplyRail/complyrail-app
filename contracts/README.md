@@ -32,6 +32,7 @@ originator VASP                     contract                      beneficiary VA
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
+| `rotate_vasp_key(address, new_key)` | admin | replaces the encryption key only; emits `vasp_upd` with sha256 of old and new keys; payments are unaffected |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
 | `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |

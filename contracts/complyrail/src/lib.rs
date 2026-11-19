@@ -22,7 +22,7 @@
 //! `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Bytes, BytesN,
     Env, String, Vec,
 };
 
@@ -165,6 +165,13 @@ fn load_vasp(env: &Env, addr: &Address) -> Result<VaspEntry, Error> {
     Ok(v)
 }
 
+/// sha256 of a 32-byte public key, as emitted in `VaspKeyRotated`.
+fn key_hash(env: &Env, key: &BytesN<32>) -> BytesN<32> {
+    env.crypto()
+        .sha256(&Bytes::from_slice(env, &key.to_array()))
+        .to_bytes()
+}
+
 fn save_vasp(env: &Env, v: &VaspEntry) {
     let key = DataKey::Vasp(v.address.clone());
     env.storage().persistent().set(&key, v);
@@ -254,6 +261,18 @@ pub struct VaspUpdated {
     pub address: Address,
     pub status: VaspStatus,
     pub expires_at: Option<u64>,
+}
+
+/// Emitted on `vasp_upd` when a VASP rotates its encryption key. Carries
+/// sha256 hashes of the old and new keys so the audit log can show the change
+/// without re-publishing key material.
+#[contractevent(topics = ["vasp_upd"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaspKeyRotated {
+    #[topic]
+    pub address: Address,
+    pub old_key_hash: BytesN<32>,
+    pub new_key_hash: BytesN<32>,
 }
 
 #[contractevent(topics = ["thr_set"])]
@@ -412,6 +431,25 @@ impl ComplyRail {
             address,
             status: v.status,
             expires_at,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Replace a VASP's encryption key (admin only). Only the key used to
+    /// encrypt future IVMS101 payloads changes: payments already in flight
+    /// keep their from/to VASP addresses, amounts, status and attestation.
+    pub fn rotate_vasp_key(env: Env, address: Address, new_key: BytesN<32>) -> Result<(), Error> {
+        require_admin(&env)?;
+        let mut v = load_vasp(&env, &address)?;
+        let old_key_hash = key_hash(&env, &v.public_key);
+        let new_key_hash = key_hash(&env, &new_key);
+        v.public_key = new_key;
+        save_vasp(&env, &v);
+        VaspKeyRotated {
+            address,
+            old_key_hash,
+            new_key_hash,
         }
         .publish(&env);
         Ok(())

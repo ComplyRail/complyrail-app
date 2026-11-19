@@ -475,3 +475,90 @@ fn expiry_reclaim_emits_no_evidence_hash() {
         },
     );
 }
+
+// ----- key rotation (#46) --------------------------------------------------
+
+#[test]
+fn rotate_key_updates_key_and_emits_hashes() {
+    let t = setup();
+    let before = t.client.get_vasp(&t.vasp_a);
+    let new_key = key(&t.env, 5);
+    t.client.rotate_vasp_key(&t.vasp_a, &new_key);
+    // checked before any other client call, which would reset the event buffer
+    assert_last_event(
+        &t,
+        &VaspKeyRotated {
+            address: t.vasp_a.clone(),
+            old_key_hash: key_hash(&t.env, &before.public_key),
+            new_key_hash: key_hash(&t.env, &new_key),
+        },
+    );
+
+    let after = t.client.get_vasp(&t.vasp_a);
+    assert_eq!(after.public_key, new_key);
+    // everything else on the registry entry is untouched
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.jurisdiction, before.jurisdiction);
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.added_at, before.added_at);
+    assert_eq!(after.expires_at, before.expires_at);
+}
+
+#[test]
+fn rotation_does_not_change_payments() {
+    let t = setup();
+    // held payment (above the US threshold) submitted before the rotation
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let before = t.client.get_payment(&id);
+
+    t.client.rotate_vasp_key(&t.vasp_b, &key(&t.env, 6));
+    t.client.rotate_vasp_key(&t.vasp_a, &key(&t.env, 7));
+
+    assert_eq!(t.client.get_payment(&id), before);
+
+    // the in-flight payment still settles between the same parties
+    t.client
+        .submit_attestation(&id, &key(&t.env, 8), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.vasp_b);
+    let released = t.client.get_payment(&id);
+    assert_eq!(released.status, PaymentStatus::Released);
+    assert_eq!(released.from_vasp, t.vasp_a);
+    assert_eq!(released.to_vasp, t.vasp_b);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+
+    // and payments submitted after the rotation work as before
+    let next = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &100,
+    );
+    assert_eq!(t.client.get_payment(&next).status, PaymentStatus::Released);
+}
+
+#[test]
+fn rotate_unknown_vasp_fails() {
+    let t = setup();
+    let r = t
+        .client
+        .try_rotate_vasp_key(&Address::generate(&t.env), &key(&t.env, 5));
+    assert_eq!(r, Err(Ok(Error::VaspNotFound)));
+}
+
+#[test]
+#[should_panic]
+fn rotate_key_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    // no mock_all_auths(): admin has not signed
+    let client = ComplyRailClient::new(&env, &id);
+    client.rotate_vasp_key(&Address::generate(&env), &key(&env, 5));
+}
