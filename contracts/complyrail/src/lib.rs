@@ -55,6 +55,8 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// A revoked VASP is terminal and cannot change status again.
+    VaspRevoked = 15,
 }
 
 #[contracttype]
@@ -385,6 +387,11 @@ impl ComplyRail {
     pub fn set_vasp_status(env: Env, address: Address, status: VaspStatus) -> Result<(), Error> {
         require_admin(&env)?;
         let mut v = load_vasp(&env, &address)?;
+        // Revocation is final: a revoked VASP can never be re-admitted or
+        // suspended through this function. Re-setting `Revoked` is a no-op.
+        if v.status == VaspStatus::Revoked && status != VaspStatus::Revoked {
+            return Err(Error::VaspRevoked);
+        }
         v.status = status;
         save_vasp(&env, &v);
         VaspUpdated {

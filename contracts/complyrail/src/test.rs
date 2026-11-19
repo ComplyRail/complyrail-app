@@ -151,6 +151,40 @@ fn suspend_vasp_blocks_payments() {
 }
 
 #[test]
+fn suspended_vasp_can_be_reactivated() {
+    let t = setup();
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Active);
+    assert!(t.client.is_vasp_active(&t.vasp_b));
+}
+
+#[test]
+fn revoked_vasp_cannot_be_reactivated_or_suspended() {
+    let t = setup();
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+    assert_eq!(
+        t.client.try_set_vasp_status(&t.vasp_b, &VaspStatus::Active),
+        Err(Ok(Error::VaspRevoked))
+    );
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Suspended),
+        Err(Ok(Error::VaspRevoked))
+    );
+    // the failed attempts left the status untouched
+    assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Revoked);
+    assert!(!t.client.is_vasp_active(&t.vasp_b));
+}
+
+#[test]
+fn revoking_again_is_allowed() {
+    let t = setup();
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+    assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Revoked);
+}
+
+#[test]
 fn expired_vasp_is_inactive() {
     let t = setup();
     t.client.set_vasp_expiry(&t.vasp_a, &Some(2_000));
