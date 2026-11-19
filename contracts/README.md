@@ -36,10 +36,21 @@ originator VASP                     contract                      beneficiary VA
 | `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
-| `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |
+| `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold; only before `expires_at` |
 | `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
+
+### Release and reclaim windows
+
+A held payment has one window per party, and they never overlap:
+
+| Ledger time `now` | Release / reject | Reclaim |
+|---|---|---|
+| `now < expires_at` | allowed | `PaymentNotExpired` |
+| `now >= expires_at` | `PaymentExpired` (no grace period) | allowed (originator) |
+
+The boundary is inclusive for reclaim: at exactly `expires_at` the originator can reclaim and the beneficiary can no longer release. Whichever transaction lands first can therefore never race the other.
 
 Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
 

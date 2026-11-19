@@ -55,6 +55,9 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// The payment's `expires_at` has passed: it can no longer be attested
+    /// or released, only reclaimed by the originator.
+    PaymentExpired = 15,
 }
 
 #[contracttype]
@@ -586,6 +589,11 @@ impl ComplyRail {
         require_pending(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {
             return Err(Error::Unauthorized);
+        }
+        // Release window closes exactly at `expires_at`; from that ledger on
+        // only `reclaim_expired` can settle the payment (see contracts/README.md).
+        if env.ledger().timestamp() >= p.expires_at {
+            return Err(Error::PaymentExpired);
         }
         if p.requires_attestation && p.attestation_hash.is_none() {
             return Err(Error::AttestationRequired);

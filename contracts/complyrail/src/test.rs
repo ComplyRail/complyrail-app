@@ -379,6 +379,66 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert_eq!(p.status, PaymentStatus::Pending);
 }
 
+// ----- release window vs. reclaim window ----------------------------------
+
+#[test]
+fn release_allowed_just_before_expiry() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + DEFAULT_PAYMENT_TTL - 1);
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn release_rejected_at_and_after_expiry_and_reclaim_takes_over() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    // exactly at expiry: beneficiary release is closed, reclaim opens
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentExpired))
+    );
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.admin),
+        Err(Ok(Error::PaymentExpired))
+    );
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+
+    // a later release cannot double-settle the reclaimed payment
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + DEFAULT_PAYMENT_TTL + 60);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+}
+
 // ----- audit: actor on release / reject events -----------------------------
 
 // `events().all()` only reports the most recent invocation, so each assertion
