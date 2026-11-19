@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::Event as _;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env, String,
 };
@@ -592,5 +593,236 @@ fn list_payments_by_vasp_unknown_vasp_is_empty() {
             .list_payments_by_vasp(&Address::generate(&t.env), &0, &10)
             .len(),
         0
+    );
+}
+
+// ----- event assertions ----------------------------------------------------
+//
+// `env.events().all()` only holds the events of the most recent invocation,
+// and includes token-contract events, so each check runs right after its call
+// and is filtered down to this contract.
+
+#[test]
+fn register_vasp_emits_vasp_reg() {
+    let t = setup();
+    let new_vasp = Address::generate(&t.env);
+    t.client.register_vasp(
+        &new_vasp,
+        &s(&t.env, "Gamma"),
+        &s(&t.env, "SG"),
+        &key(&t.env, 3),
+        &None,
+    );
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [VaspRegistered {
+            address: new_vasp,
+            jurisdiction: s(&t.env, "SG"),
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn set_vasp_status_emits_vasp_upd() {
+    let t = setup();
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [VaspUpdated {
+            address: t.vasp_b.clone(),
+            status: VaspStatus::Suspended,
+            expires_at: None,
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn set_vasp_expiry_emits_vasp_upd() {
+    let t = setup();
+    t.client.set_vasp_expiry(&t.vasp_a, &Some(2_000));
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [VaspUpdated {
+            address: t.vasp_a.clone(),
+            status: VaspStatus::Active,
+            expires_at: Some(2_000),
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn set_threshold_emits_thr_set() {
+    let t = setup();
+    let a = t.token.address.clone();
+    t.client.set_threshold(&a, &s(&t.env, "GB"), &500);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [ThresholdSet {
+            asset: a,
+            jurisdiction: s(&t.env, "GB"),
+            amount: 500,
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn held_payment_emits_only_pay_sub() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [PaymentSubmitted {
+            id,
+            from_vasp: t.vasp_a.clone(),
+            to_vasp: t.vasp_b.clone(),
+            amount: 5_000,
+            requires_attestation: true,
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn instant_settlement_emits_pay_sub_then_pay_rel() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &2_999,
+    );
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [
+            PaymentSubmitted {
+                id,
+                from_vasp: t.vasp_a.clone(),
+                to_vasp: t.vasp_b.clone(),
+                amount: 2_999,
+                requires_attestation: false,
+            }
+            .to_xdr(&t.env, &t.client.address),
+            PaymentReleased { id, amount: 2_999 }.to_xdr(&t.env, &t.client.address),
+        ]
+    );
+}
+
+#[test]
+fn submit_attestation_emits_att_sub() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [AttestationSubmitted {
+            id,
+            hash: key(&t.env, 7),
+            ivms_version: s(&t.env, "IVMS101.2023"),
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn release_payment_emits_pay_rel() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [PaymentReleased { id, amount: 5_000 }.to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn reject_payment_emits_pay_rej_with_reason() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .reject_payment(&id, &t.vasp_b, &s(&t.env, "name mismatch"));
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [PaymentRejected {
+            id,
+            reason: s(&t.env, "name mismatch"),
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn reclaim_expired_emits_pay_rej_as_expired() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [PaymentRejected {
+            id,
+            reason: s(&t.env, "expired"),
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+}
+
+#[test]
+fn admin_handover_emits_adm_prop_and_adm_acc() {
+    let t = setup();
+    let new_admin = Address::generate(&t.env);
+    t.client.propose_admin(&new_admin);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [AdminProposed {
+            proposed: new_admin.clone(),
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+    t.client.accept_admin(&new_admin);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [AdminAccepted {
+            previous: t.admin.clone(),
+            new_admin,
+        }
+        .to_xdr(&t.env, &t.client.address)]
     );
 }
