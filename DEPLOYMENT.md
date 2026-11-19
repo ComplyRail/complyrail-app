@@ -44,6 +44,27 @@ The dashboard reads the contract ID from `contracts/deployments/testnet.json`, s
 
 It signs as the admin, so it needs a repository secret named `TESTNET_ADMIN_SECRET` that holds the admin's **testnet** secret key (Settings → Secrets and variables → Actions). Never use a mainnet key.
 
+## Asset registry (`config/assets.json`)
+
+The dashboard's asset list comes from `config/assets.json`, read at build time. Change it and rebuild; no code change is needed. Each entry is:
+
+| Field | Required | Rule |
+|---|---|---|
+| `symbol` | yes | 1–12 uppercase letters or digits, unique in the file |
+| `native` | for XLM only | `true` for the native asset; it must not have an `issuer` |
+| `issuer` | for issued assets | a valid Stellar public key (`G…`) |
+
+Example:
+
+```json
+[
+  { "symbol": "XLM", "native": true },
+  { "symbol": "USDC", "issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" }
+]
+```
+
+An invalid entry stops the build with an error that names the entry. The issuer must match the network the dashboard is built for (the testnet USDC issuer above is for testnet only).
+
 ## Local development
 
 ```bash

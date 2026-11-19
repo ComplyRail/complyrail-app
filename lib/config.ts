@@ -1,5 +1,6 @@
-import { Asset, Networks } from '@stellar/stellar-sdk'
+import { Asset, Networks, StrKey } from '@stellar/stellar-sdk'
 import deployment from '../contracts/deployments/testnet.json'
+import assetRegistry from '../config/assets.json'
 
 /**
  * Runtime configuration.
@@ -40,16 +41,39 @@ export interface AssetOption {
   contractId: string
 }
 
-/** Circle's testnet USDC issuer. */
-const TESTNET_USDC_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+/** One entry in config/assets.json. Native (XLM) has no issuer. */
+export interface AssetEntry {
+  symbol: string
+  native?: boolean
+  issuer?: string
+}
 
-export const ASSETS: AssetOption[] = [
-  { symbol: 'XLM', contractId: Asset.native().contractId(config.networkPassphrase) },
-  {
-    symbol: 'USDC',
-    contractId: new Asset('USDC', TESTNET_USDC_ISSUER).contractId(config.networkPassphrase),
-  },
-]
+/**
+ * Validate registry entries and map them to AssetOptions for a network.
+ * Throws on the first invalid entry so a bad config fails the build.
+ */
+export function buildAssetOptions(entries: AssetEntry[], networkPassphrase: string): AssetOption[] {
+  const seen = new Set<string>()
+  return entries.map((e, i) => {
+    const where = `config/assets.json entry ${i}`
+    if (typeof e.symbol !== 'string' || !/^[A-Z0-9]{1,12}$/.test(e.symbol)) {
+      throw new Error(`${where}: symbol must be 1-12 uppercase letters or digits, got "${e.symbol}"`)
+    }
+    if (seen.has(e.symbol)) throw new Error(`${where}: duplicate symbol ${e.symbol}`)
+    seen.add(e.symbol)
+    if (e.native) {
+      if (e.issuer) throw new Error(`${where}: native asset must not have an issuer`)
+      return { symbol: e.symbol, contractId: Asset.native().contractId(networkPassphrase) }
+    }
+    if (!e.issuer || !StrKey.isValidEd25519PublicKey(e.issuer)) {
+      throw new Error(`${where}: issuer must be a valid Stellar public key (G...)`)
+    }
+    return { symbol: e.symbol, contractId: new Asset(e.symbol, e.issuer).contractId(networkPassphrase) }
+  })
+}
+
+/** Assets offered in the UI, read from config/assets.json at build time. */
+export const ASSETS: AssetOption[] = buildAssetOptions(assetRegistry as AssetEntry[], config.networkPassphrase)
 
 export function assetSymbol(contractId: string): string {
   return ASSETS.find(a => a.contractId === contractId)?.symbol ?? contractId.slice(0, 6)
