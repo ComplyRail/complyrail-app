@@ -58,6 +58,8 @@ pub enum Error {
     /// The contract received a different amount than the one requested,
     /// e.g. the token charges a transfer fee.
     ReceivedAmountMismatch = 15,
+    /// The asset is not on the admin's allowlist for escrow.
+    AssetNotAllowed = 16,
 }
 
 #[contracttype]
@@ -123,6 +125,7 @@ enum DataKey {
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
+    AllowedAsset(Address),
 }
 
 #[contract]
@@ -266,6 +269,14 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+}
+
+#[contractevent(topics = ["ast_set"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetAllowlistSet {
+    #[topic]
+    pub asset: Address,
+    pub allowed: bool,
 }
 
 #[contractevent(topics = ["pay_sub"])]
@@ -471,6 +482,26 @@ impl ComplyRail {
         threshold_for(&env, &asset, &jurisdiction)
     }
 
+    // ----- Asset allowlist -------------------------------------------------
+
+    /// Admin adds or removes `asset` from the set that may be escrowed.
+    /// Payments in any other asset are rejected.
+    pub fn set_asset_allowed(env: Env, asset: Address, allowed: bool) -> Result<(), Error> {
+        require_admin(&env)?;
+        let key = DataKey::AllowedAsset(asset.clone());
+        env.storage().persistent().set(&key, &allowed);
+        bump_persistent(&env, &key);
+        AssetAllowlistSet { asset, allowed }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_asset_allowed(env: Env, asset: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::AllowedAsset(asset))
+            .unwrap_or(false)
+    }
+
     // ----- Payments --------------------------------------------------------
 
     /// Originating VASP sends `amount` of `asset` towards `beneficiary` at
@@ -493,6 +524,9 @@ impl ComplyRail {
         }
         let origin = require_active_vasp(&env, &from_vasp)?;
         require_active_vasp(&env, &to_vasp)?;
+        if !Self::is_asset_allowed(env.clone(), asset.clone()) {
+            return Err(Error::AssetNotAllowed);
+        }
 
         // Escrow is only safe if the contract really holds `amount` more
         // afterwards. Fee-on-transfer tokens deliver less, so measure the

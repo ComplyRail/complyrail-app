@@ -58,6 +58,7 @@ fn setup<'a>() -> Setup<'a> {
         &None,
     );
     client.set_threshold(&token_addr, &s(&env, "US"), &3_000);
+    client.set_asset_allowed(&token_addr, &true);
 
     Setup {
         env,
@@ -90,6 +91,7 @@ fn constructor_respects_custom_ttl() {
     StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
     let id = env.register(ComplyRail, (admin.clone(), Some(60u64)));
     let c = ComplyRailClient::new(&env, &id);
+    c.set_asset_allowed(&sac.address(), &true);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
     let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
@@ -427,6 +429,8 @@ fn fee_on_transfer_asset_is_rejected() {
     let fee_id = t.env.register(FeeToken, ());
     let fee = FeeTokenClient::new(&t.env, &fee_id);
     fee.mint(&t.vasp_a, &1_000);
+    // Allowlisted, so the call reaches the balance check.
+    t.client.set_asset_allowed(&fee_id, &true);
 
     // 100 requested, 90 arrives: the escrow would be under-collateralised.
     let r = t
@@ -455,4 +459,53 @@ fn exact_transfer_asset_still_accepted() {
     );
     assert_eq!(t.client.get_payment(&id).amount, 5_000);
     assert_eq!(t.token.balance(&t.client.address), 5_000);
+}
+
+// ----- asset allowlist (issue #22) -----------------------------------------
+
+#[test]
+fn disallowed_asset_is_rejected() {
+    let t = setup();
+    let other = t
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&t.env))
+        .address();
+    StellarAssetClient::new(&t.env, &other).mint(&t.vasp_a, &1_000);
+    assert!(!t.client.is_asset_allowed(&other));
+
+    let r = t
+        .client
+        .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &other, &100);
+    assert_eq!(r, Err(Ok(Error::AssetNotAllowed)));
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.client.payment_count(), 0);
+}
+
+#[test]
+fn allowlisted_asset_accepted_and_revocable() {
+    let t = setup();
+    assert!(t.client.is_asset_allowed(&t.token.address));
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(t.client.payment_count(), 1);
+
+    t.client.set_asset_allowed(&t.token.address, &false);
+    assert!(!t.client.is_asset_allowed(&t.token.address));
+    let r =
+        t.client
+            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &10);
+    assert_eq!(r, Err(Ok(Error::AssetNotAllowed)));
+}
+
+#[test]
+fn only_admin_can_set_allowlist() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(&env, &id);
+    // No mock_all_auths: the admin's auth is required and not provided.
+    let r = client.try_set_asset_allowed(&sac.address(), &true);
+    assert!(r.is_err());
+    assert!(!client.is_asset_allowed(&sac.address()));
 }
