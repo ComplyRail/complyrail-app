@@ -55,6 +55,8 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    AlreadyAcknowledged = 15,
+    AttestationNotAcknowledged = 16,
 }
 
 #[contracttype]
@@ -105,6 +107,8 @@ pub struct Payment {
     pub attestation_hash: Option<BytesN<32>>,
     pub ivms_version: Option<String>,
     pub attested_at: Option<u64>,
+    /// Set when `to_vasp` confirms it has checked the IVMS101 payload.
+    pub acknowledged_at: Option<u64>,
     pub created_at: u64,
     pub expires_at: u64,
     pub resolved_at: Option<u64>,
@@ -283,6 +287,24 @@ pub struct AttestationSubmitted {
     pub id: u64,
     pub hash: BytesN<32>,
     pub ivms_version: String,
+}
+
+#[contractevent(topics = ["att_ack"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationAcknowledged {
+    #[topic]
+    pub id: u64,
+    pub at: u64,
+}
+
+/// Emitted when the admin releases a payment the beneficiary VASP has not
+/// acknowledged. Keeps the override visible in the audit trail.
+#[contractevent(topics = ["pay_ovr"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcknowledgementOverridden {
+    #[topic]
+    pub id: u64,
+    pub admin: Address,
 }
 
 #[contractevent(topics = ["pay_rel"])]
@@ -517,6 +539,7 @@ impl ComplyRail {
             attestation_hash: None,
             ivms_version: None,
             attested_at: None,
+            acknowledged_at: None,
             created_at: now,
             expires_at: now + ttl,
             resolved_at: None,
@@ -567,13 +590,38 @@ impl ComplyRail {
         Ok(())
     }
 
-    /// Beneficiary VASP (after checking the IVMS101 payload matches the hash)
-    /// or the admin releases a held payment to the beneficiary.
+    /// Beneficiary VASP confirms it has checked the IVMS101 payload against
+    /// the attested hash. Release by the beneficiary requires this step.
+    pub fn acknowledge_attestation(env: Env, payment_id: u64) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.to_vasp.require_auth();
+        require_pending(&p)?;
+        if p.attestation_hash.is_none() {
+            return Err(Error::AttestationRequired);
+        }
+        if p.acknowledged_at.is_some() {
+            return Err(Error::AlreadyAcknowledged);
+        }
+        let now = env.ledger().timestamp();
+        p.acknowledged_at = Some(now);
+        save_payment(&env, &p);
+        AttestationAcknowledged {
+            id: payment_id,
+            at: now,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Beneficiary VASP or admin releases a held payment to the beneficiary.
+    /// The beneficiary must have acknowledged the attestation first. The admin
+    /// may release without acknowledgement; that override emits `pay_ovr`.
     pub fn release_payment(env: Env, payment_id: u64, caller: Address) -> Result<(), Error> {
         caller.require_auth();
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
-        if caller != p.to_vasp && caller != admin(&env)? {
+        let admin_addr = admin(&env)?;
+        if caller != p.to_vasp && caller != admin_addr {
             return Err(Error::Unauthorized);
         }
         // Re-check the beneficiary VASP at release time: it may have been
@@ -584,8 +632,23 @@ impl ComplyRail {
         if p.requires_attestation && p.attestation_hash.is_none() {
             return Err(Error::AttestationRequired);
         }
+        let overridden = if caller == p.to_vasp {
+            if p.acknowledged_at.is_none() {
+                return Err(Error::AttestationNotAcknowledged);
+            }
+            false
+        } else {
+            p.acknowledged_at.is_none()
+        };
         let to = p.beneficiary.clone();
         settle(&env, &mut p, &to, PaymentStatus::Released);
+        if overridden {
+            AcknowledgementOverridden {
+                id: payment_id,
+                admin: admin_addr,
+            }
+            .publish(&env);
+        }
         PaymentReleased {
             id: payment_id,
             amount: p.amount,

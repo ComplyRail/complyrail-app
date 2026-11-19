@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, Event, String,
 };
 
 struct Setup<'a> {
@@ -248,6 +248,10 @@ fn above_threshold_full_flow() {
         .try_submit_attestation(&id, &key(&t.env, 8), &s(&t.env, "x"));
     assert_eq!(r, Err(Ok(Error::AttestationAlreadySubmitted)));
 
+    // beneficiary must acknowledge before releasing
+    let r = t.client.try_release_payment(&id, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::AttestationNotAcknowledged)));
+    t.client.acknowledge_attestation(&id);
     t.client.release_payment(&id, &t.vasp_b);
     let p = t.client.get_payment(&id);
     assert_eq!(p.status, PaymentStatus::Released);
@@ -256,6 +260,49 @@ fn above_threshold_full_flow() {
     assert_eq!(p.resolved_at, Some(1_000));
     assert_eq!(t.token.balance(&t.beneficiary), 5_000);
     assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn acknowledge_requires_attestation_and_beneficiary_auth() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    // nothing to acknowledge yet
+    assert_eq!(
+        t.client.try_acknowledge_attestation(&id),
+        Err(Ok(Error::AttestationRequired))
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    assert!(t.client.get_payment(&id).acknowledged_at.is_some());
+    assert_eq!(
+        t.client.try_acknowledge_attestation(&id),
+        Err(Ok(Error::AlreadyAcknowledged))
+    );
+}
+
+#[test]
+fn acknowledge_is_signed_by_beneficiary_vasp() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    // the only required signer must be the beneficiary VASP, not the originator
+    let (signer, _) = t.env.auths().first().cloned().expect("auth recorded");
+    assert_eq!(signer, t.vasp_b);
 }
 
 #[test]
@@ -344,6 +391,61 @@ fn admin_can_release_and_outsider_cannot() {
     );
     t.client.release_payment(&id, &t.admin);
     assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn admin_override_without_ack_is_logged() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.admin);
+
+    let contract = t.client.address.clone();
+    let expected = AcknowledgementOverridden {
+        id,
+        admin: t.admin.clone(),
+    };
+    assert!(t
+        .env
+        .events()
+        .all()
+        .events()
+        .contains(&expected.to_xdr(&t.env, &contract)));
+}
+
+#[test]
+fn admin_release_after_ack_is_not_an_override() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    t.client.release_payment(&id, &t.admin);
+
+    let contract = t.client.address.clone();
+    let override_evt = AcknowledgementOverridden {
+        id,
+        admin: t.admin.clone(),
+    };
+    assert!(!t
+        .env
+        .events()
+        .all()
+        .events()
+        .contains(&override_evt.to_xdr(&t.env, &contract)));
 }
 
 #[test]
