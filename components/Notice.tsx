@@ -63,6 +63,7 @@ const CONTRACT_ERRORS: Record<number, string> = {
   13: 'Sender and receiver VASP must be different',
   14: 'Threshold must be zero or more',
   15: 'This payment already has an attestation and can no longer be cancelled',
+  16: 'The token transfer failed. Check the sender balance and that the recipient can receive this asset (trustline)',
 }
 
 export function friendlyError(e: unknown): string {

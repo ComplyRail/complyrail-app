@@ -57,6 +57,9 @@ pub enum Error {
     InvalidThreshold = 14,
     /// Payment already has an attestation, so the originator can no longer cancel it.
     AlreadyAttested = 15,
+    /// The token transfer failed (insufficient balance, missing trustline or
+    /// the recipient is not authorised to receive the asset).
+    TransferFailed = 16,
 }
 
 #[contracttype]
@@ -232,11 +235,33 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
-fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
-    token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
+/// Moves tokens with `try_transfer`, so a failing transfer surfaces as
+/// `Error::TransferFailed` instead of an opaque host error.
+fn transfer_tokens(
+    env: &Env,
+    asset: &Address,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+) -> Result<(), Error> {
+    let inner = token::Client::new(env, asset)
+        .try_transfer(from, to, &amount)
+        .map_err(|_| Error::TransferFailed)?;
+    inner.map_err(|_| Error::TransferFailed)
+}
+
+fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) -> Result<(), Error> {
+    transfer_tokens(
+        env,
+        &p.asset,
+        &env.current_contract_address(),
+        to,
+        p.amount,
+    )?;
     p.status = status;
     p.resolved_at = Some(env.ledger().timestamp());
     save_payment(env, p);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -503,11 +528,13 @@ impl ComplyRail {
         let origin = require_active_vasp(&env, &from_vasp)?;
         require_active_vasp(&env, &to_vasp)?;
 
-        token::Client::new(&env, &asset).transfer(
+        transfer_tokens(
+            &env,
+            &asset,
             &from_vasp,
-            env.current_contract_address(),
-            &amount,
-        );
+            &env.current_contract_address(),
+            amount,
+        )?;
 
         let s = env.storage().instance();
         let id: u64 = s.get(&DataKey::NextPaymentId).unwrap_or(0);
@@ -546,7 +573,7 @@ impl ComplyRail {
         if requires_attestation {
             save_payment(&env, &p);
         } else {
-            settle(&env, &mut p, &beneficiary, PaymentStatus::Released);
+            settle(&env, &mut p, &beneficiary, PaymentStatus::Released)?;
             PaymentReleased { id, amount }.publish(&env);
         }
         Ok(id)
@@ -592,7 +619,7 @@ impl ComplyRail {
             return Err(Error::AttestationRequired);
         }
         let to = p.beneficiary.clone();
-        settle(&env, &mut p, &to, PaymentStatus::Released);
+        settle(&env, &mut p, &to, PaymentStatus::Released)?;
         PaymentReleased {
             id: payment_id,
             amount: p.amount,
@@ -616,7 +643,7 @@ impl ComplyRail {
             return Err(Error::Unauthorized);
         }
         let to = p.from_vasp.clone();
-        settle(&env, &mut p, &to, PaymentStatus::Rejected);
+        settle(&env, &mut p, &to, PaymentStatus::Rejected)?;
         PaymentRejected {
             id: payment_id,
             reason,
@@ -635,7 +662,7 @@ impl ComplyRail {
             return Err(Error::PaymentNotExpired);
         }
         let to = p.from_vasp.clone();
-        settle(&env, &mut p, &to, PaymentStatus::Reclaimed);
+        settle(&env, &mut p, &to, PaymentStatus::Reclaimed)?;
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
@@ -656,7 +683,7 @@ impl ComplyRail {
         }
         let to = p.from_vasp.clone();
         let amount = p.amount;
-        settle(&env, &mut p, &to, PaymentStatus::Cancelled);
+        settle(&env, &mut p, &to, PaymentStatus::Cancelled)?;
         PaymentCancelled {
             id: payment_id,
             amount,

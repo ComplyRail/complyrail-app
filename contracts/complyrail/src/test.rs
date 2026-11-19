@@ -2,6 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
+    contract, contractimpl,
+    symbol_short,
     testutils::{Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env, String,
@@ -446,4 +448,97 @@ fn cancel_settled_payment_is_rejected() {
     let r = t.client.try_cancel_payment(&id);
     assert_eq!(r, Err(Ok(Error::PaymentNotPending)));
     assert_eq!(t.token.balance(&t.beneficiary), 2_999);
+}
+
+// ----- transfer failures ---------------------------------------------------
+
+/// Test-only token whose transfers panic when the recipient is the blocked
+/// address. This stands in for a recipient with no trustline on the asset.
+#[contract]
+struct BlockingToken;
+
+#[contractimpl]
+impl BlockingToken {
+    pub fn block(env: Env, who: Address) {
+        env.storage().instance().set(&symbol_short!("blocked"), &who);
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, _amount: i128) {
+        from.require_auth();
+        if let Some(blocked) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("blocked"))
+        {
+            if blocked == to {
+                panic!("recipient has no trustline");
+            }
+        }
+    }
+}
+
+/// Registers the contract with a blocking token and two active VASPs, with a
+/// threshold of 3_000 for the token.
+fn blocking_setup<'a>(
+    env: &'a Env,
+    beneficiary: &Address,
+) -> (ComplyRailClient<'a>, Address, Address, Address) {
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(env);
+    let vasp_a = Address::generate(env);
+    let vasp_b = Address::generate(env);
+    let token = env.register(BlockingToken, ());
+    BlockingTokenClient::new(env, &token).block(beneficiary);
+
+    let id = env.register(ComplyRail, (admin, None::<u64>));
+    let client = ComplyRailClient::new(env, &id);
+    client.register_vasp(&vasp_a, &s(env, "Acme Exchange"), &s(env, "US"), &key(env, 1), &None);
+    client.register_vasp(&vasp_b, &s(env, "Beta Finance"), &s(env, "GB"), &key(env, 2), &None);
+    client.set_threshold(&token, &s(env, "US"), &3_000);
+    (client, vasp_a, vasp_b, token)
+}
+
+#[test]
+fn submit_with_insufficient_balance_maps_to_transfer_failed() {
+    let t = setup();
+    // vasp_a holds 1_000_000, so this transfer cannot succeed.
+    let r = t.client.try_submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &2_000_000,
+    );
+    assert_eq!(r, Err(Ok(Error::TransferFailed)));
+    assert_eq!(t.client.payment_count(), 0);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn settle_to_recipient_without_trustline_maps_to_transfer_failed() {
+    let env = Env::default();
+    let beneficiary = Address::generate(&env);
+    let (client, vasp_a, vasp_b, token) = blocking_setup(&env, &beneficiary);
+
+    // Below threshold: the payout to the beneficiary fails inside submit.
+    let r = client.try_submit_payment(&vasp_a, &vasp_b, &beneficiary, &token, &2_999);
+    assert_eq!(r, Err(Ok(Error::TransferFailed)));
+    assert_eq!(client.payment_count(), 0);
+}
+
+#[test]
+fn release_to_recipient_without_trustline_keeps_payment_pending() {
+    let env = Env::default();
+    let beneficiary = Address::generate(&env);
+    let (client, vasp_a, vasp_b, token) = blocking_setup(&env, &beneficiary);
+
+    // Above threshold: escrow succeeds, the payout at release does not.
+    let id = client.submit_payment(&vasp_a, &vasp_b, &beneficiary, &token, &5_000);
+    client.submit_attestation(&id, &key(&env, 7), &s(&env, "IVMS101.2023"));
+
+    let r = client.try_release_payment(&id, &vasp_b);
+    assert_eq!(r, Err(Ok(Error::TransferFailed)));
+    assert_eq!(client.get_payment(&id).status, PaymentStatus::Pending);
+    assert_eq!(client.get_payment(&id).resolved_at, None);
 }
