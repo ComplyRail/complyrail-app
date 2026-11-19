@@ -203,6 +203,53 @@ fn negative_threshold_rejected() {
     assert_eq!(r, Err(Ok(Error::InvalidThreshold)));
 }
 
+#[test]
+fn exact_jurisdiction_threshold_boundary() {
+    // US rule is 3_000: "at or above" means 3_000 itself needs attestation.
+    let t = setup();
+    for (amount, expected) in [(2_999i128, false), (3_000, true), (3_001, true)] {
+        let id = t.client.submit_payment(
+            &t.vasp_a,
+            &t.vasp_b,
+            &t.beneficiary,
+            &t.token.address,
+            &amount,
+        );
+        assert_eq!(
+            t.client.get_payment(&id).requires_attestation,
+            expected,
+            "amount {amount}"
+        );
+    }
+}
+
+#[test]
+fn wildcard_threshold_boundary() {
+    // SG has no rule of its own, so the "*" fallback of 1_000 applies.
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_threshold(&token, &s(&t.env, "*"), &1_000);
+    let sg_vasp = Address::generate(&t.env);
+    t.client.register_vasp(
+        &sg_vasp,
+        &s(&t.env, "Lion Remit"),
+        &s(&t.env, "SG"),
+        &key(&t.env, 3),
+        &None,
+    );
+    StellarAssetClient::new(&t.env, &token).mint(&sg_vasp, &10_000);
+    for (amount, expected) in [(999i128, false), (1_000, true), (1_001, true)] {
+        let id = t
+            .client
+            .submit_payment(&sg_vasp, &t.vasp_b, &t.beneficiary, &token, &amount);
+        assert_eq!(
+            t.client.get_payment(&id).requires_attestation,
+            expected,
+            "amount {amount}"
+        );
+    }
+}
+
 // ----- payments ------------------------------------------------------------
 
 #[test]
