@@ -19,8 +19,13 @@ export function toUnits(amount: string, decimals = ASSET_DECIMALS): bigint {
   if (!/^\d+(\.\d+)?$/.test(trimmed)) throw new Error(`Invalid amount: "${amount}"`)
   const [whole, frac = ''] = trimmed.split('.')
   if (frac.length > decimals) throw new Error(`Too many decimal places (max ${decimals})`)
-  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, '0') || '0')
+  const units = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, '0') || '0')
+  if (units > MAX_I128) throw new Error('Amount is too large for the contract')
+  return units
 }
+
+/** Largest value the contract accepts for amounts (Soroban i128). */
+export const MAX_I128 = (1n << 127n) - 1n
 
 /** Convert integer units back to a human string, trimming trailing zeros. */
 export function fromUnits(units: bigint | string, decimals = ASSET_DECIMALS): string {

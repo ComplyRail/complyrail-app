@@ -6,6 +6,7 @@ import {
   formatHash,
   fromUnits,
   hexToBytes,
+  MAX_I128,
   parseVaspKey,
   toUnits,
   vaspKeyError,
@@ -81,5 +82,22 @@ describe('VASP key validation', () => {
 
   it('rejects non-hex characters of the right length', () => {
     expect(vaspKeyError('zz'.repeat(32))).not.toBeNull()
+  })
+})
+
+describe('toUnits i128 bound', () => {
+  const toHuman = (units: bigint) =>
+    `${units / 10n ** 7n}.${(units % 10n ** 7n).toString().padStart(7, '0')}`
+
+  it('accepts the largest amount that fits in i128', () => {
+    expect(toUnits(toHuman(MAX_I128))).toBe(MAX_I128)
+  })
+
+  it('rejects one unit above the i128 maximum', () => {
+    expect(() => toUnits(toHuman(MAX_I128 + 1n))).toThrow(/too large/)
+  })
+
+  it('rejects amounts far above the i128 maximum', () => {
+    expect(() => toUnits('1' + '0'.repeat(40))).toThrow(/too large/)
   })
 })
