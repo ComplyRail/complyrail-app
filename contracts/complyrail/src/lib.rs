@@ -32,6 +32,9 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Upper bound on how many payment ids one `refund_pending_for_vasp` call scans.
+pub const MAX_REFUND_BATCH: u64 = 100;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -55,6 +58,10 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// The receiving VASP is still active, so the originator cannot reclaim early.
+    ReceiverStillActive = 15,
+    /// Batch size exceeds `MAX_REFUND_BATCH`.
+    BatchTooLarge = 16,
 }
 
 #[contracttype]
@@ -630,6 +637,72 @@ impl ComplyRail {
         }
         .publish(&env);
         Ok(())
+    }
+
+    /// Originating VASP reclaims a held payment immediately when the
+    /// receiving VASP is no longer active (revoked, suspended or expired),
+    /// instead of waiting for `expires_at`.
+    pub fn reclaim_inactive(env: Env, payment_id: u64) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.from_vasp.require_auth();
+        require_pending(&p)?;
+        let receiver = load_vasp(&env, &p.to_vasp)?;
+        if vasp_is_active(&env, &receiver) {
+            return Err(Error::ReceiverStillActive);
+        }
+        let to = p.from_vasp.clone();
+        settle(&env, &mut p, &to, PaymentStatus::Reclaimed);
+        PaymentRejected {
+            id: payment_id,
+            reason: String::from_str(&env, "receiver_inactive"),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Admin refunds pending payments addressed to an inactive VASP, scanning
+    /// payment ids `start_id..start_id + limit` (bounded by `MAX_REFUND_BATCH`).
+    /// Returns the next id to resume from, or `payment_count` when finished.
+    pub fn refund_pending_for_vasp(
+        env: Env,
+        vasp: Address,
+        start_id: u64,
+        limit: u64,
+    ) -> Result<u64, Error> {
+        require_admin(&env)?;
+        if limit > MAX_REFUND_BATCH {
+            return Err(Error::BatchTooLarge);
+        }
+        let receiver = load_vasp(&env, &vasp)?;
+        if vasp_is_active(&env, &receiver) {
+            return Err(Error::ReceiverStillActive);
+        }
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextPaymentId)
+            .unwrap_or(0);
+        let end = core::cmp::min(start_id.saturating_add(limit), count);
+        let mut id = start_id;
+        while id < end {
+            if let Some(mut p) = env
+                .storage()
+                .persistent()
+                .get::<_, Payment>(&DataKey::Payment(id))
+            {
+                if p.status == PaymentStatus::Pending && p.to_vasp == vasp {
+                    let to = p.from_vasp.clone();
+                    settle(&env, &mut p, &to, PaymentStatus::Rejected);
+                    PaymentRejected {
+                        id,
+                        reason: String::from_str(&env, "receiver_inactive"),
+                    }
+                    .publish(&env);
+                }
+            }
+            id += 1;
+        }
+        Ok(end)
     }
 
     pub fn get_payment(env: Env, payment_id: u64) -> Result<Payment, Error> {

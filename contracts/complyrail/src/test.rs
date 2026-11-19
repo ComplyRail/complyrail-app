@@ -378,3 +378,81 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- inactive receiver handling (issue #33) -----------------------------
+
+#[test]
+fn originator_reclaims_when_receiver_revoked_before_expiry() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(t.token.balance(&t.vasp_a), 995_000);
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+
+    t.client.reclaim_inactive(&id);
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn reclaim_inactive_rejected_while_receiver_active() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let r = t.client.try_reclaim_inactive(&id);
+    assert_eq!(r, Err(Ok(Error::ReceiverStillActive)));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+}
+
+#[test]
+fn admin_refunds_pending_for_inactive_vasp_in_batches() {
+    let t = setup();
+    let token = t.token.address.clone();
+    // Three held payments to vasp_b, one below threshold that settles at once.
+    for _ in 0..3 {
+        t.client
+            .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &5_000);
+    }
+    let settled = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &100);
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+
+    let next = t.client.refund_pending_for_vasp(&t.vasp_b, &0, &2);
+    assert_eq!(next, 2);
+    assert_eq!(t.client.get_payment(&0).status, PaymentStatus::Rejected);
+    assert_eq!(t.client.get_payment(&1).status, PaymentStatus::Rejected);
+    assert_eq!(t.client.get_payment(&2).status, PaymentStatus::Pending);
+
+    let next = t.client.refund_pending_for_vasp(&t.vasp_b, &next, &2);
+    assert_eq!(next, 4);
+    assert_eq!(t.client.get_payment(&2).status, PaymentStatus::Rejected);
+    assert_eq!(t.client.get_payment(&settled).status, PaymentStatus::Released);
+    // Only the settled 100 remains with the beneficiary; all held funds returned.
+    assert_eq!(t.token.balance(&t.beneficiary), 100);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000 - 100);
+}
+
+#[test]
+fn refund_batch_limits_enforced() {
+    let t = setup();
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+    let too_big = t.client.try_refund_pending_for_vasp(&t.vasp_b, &0, &(MAX_REFUND_BATCH + 1));
+    assert_eq!(too_big, Err(Ok(Error::BatchTooLarge)));
+
+    let t2 = setup();
+    let active = t2.client.try_refund_pending_for_vasp(&t2.vasp_b, &0, &10);
+    assert_eq!(active, Err(Ok(Error::ReceiverStillActive)));
+}
