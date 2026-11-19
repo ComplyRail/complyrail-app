@@ -119,6 +119,9 @@ pub struct Payment {
     pub amount: i128,
     pub status: PaymentStatus,
     pub requires_attestation: bool,
+    /// Optional reference from the originator's own system (e.g. an anchor's
+    /// transfer id), so on-chain payments can be matched to off-chain records.
+    pub external_ref: Option<BytesN<32>>,
     /// sha256 of the IVMS101 payload exchanged off-chain.
     pub attestation_hash: Option<BytesN<32>>,
     pub ivms_version: Option<String>,
@@ -314,6 +317,7 @@ pub struct PaymentSubmitted {
     pub to_vasp: Address,
     pub amount: i128,
     pub requires_attestation: bool,
+    pub external_ref: Option<BytesN<32>>,
 }
 
 #[contractevent(topics = ["att_sub"])]
@@ -518,7 +522,9 @@ impl ComplyRail {
 
     /// Originating VASP sends `amount` of `asset` towards `beneficiary` at
     /// `to_vasp`. Tokens move into escrow. Below-threshold payments settle in
-    /// the same call; others stay `Pending`. Returns the payment id.
+    /// the same call; others stay `Pending`. `external_ref` is an optional
+    /// off-chain reference stored with the payment and emitted in
+    /// `PaymentSubmitted`. Returns the payment id.
     pub fn submit_payment(
         env: Env,
         from_vasp: Address,
@@ -526,6 +532,7 @@ impl ComplyRail {
         beneficiary: Address,
         asset: Address,
         amount: i128,
+        external_ref: Option<BytesN<32>>,
     ) -> Result<u64, Error> {
         from_vasp.require_auth();
         if amount <= 0 {
@@ -561,6 +568,7 @@ impl ComplyRail {
             amount,
             status: PaymentStatus::Pending,
             requires_attestation,
+            external_ref: external_ref.clone(),
             attestation_hash: None,
             ivms_version: None,
             attested_at: None,
@@ -575,6 +583,7 @@ impl ComplyRail {
             to_vasp,
             amount,
             requires_attestation,
+            external_ref,
         }
         .publish(&env);
 

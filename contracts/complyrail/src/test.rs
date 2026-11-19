@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, Event, String,
 };
 
 struct Setup<'a> {
@@ -92,7 +92,7 @@ fn constructor_respects_custom_ttl() {
     let c = ComplyRailClient::new(&env, &id);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
-    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
+    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10, &None);
     assert_eq!(c.get_payment(&pid).expires_at, 560);
 }
 
@@ -110,7 +110,7 @@ fn constructor_accepts_max_ttl() {
     let c = ComplyRailClient::new(&env, &id);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
-    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
+    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10, &None);
     assert_eq!(c.get_payment(&pid).expires_at, 1_000 + MAX_PAYMENT_TTL);
 }
 
@@ -136,7 +136,7 @@ fn submit_payment_rejects_expiry_overflow() {
     let c = ComplyRailClient::new(&env, &id);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
-    let r = c.try_submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
+    let r = c.try_submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10, &None);
     assert_eq!(r, Err(Ok(Error::ExpiryOverflow)));
     assert_eq!(c.payment_count(), 0);
 }
@@ -197,6 +197,7 @@ fn submit_attestation_enforces_ivms_version_limit() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     let r = t.client.try_submit_attestation(
         &id,
@@ -222,6 +223,7 @@ fn reject_payment_enforces_reason_limit() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     let r = t
         .client
@@ -242,6 +244,7 @@ fn reject_payment_rejects_blank_reason() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     assert_eq!(
         t.client.try_reject_payment(&id, &t.vasp_b, &s(&t.env, "")),
@@ -259,6 +262,47 @@ fn reject_payment_rejects_blank_reason() {
     t.client
         .reject_payment(&id, &t.vasp_b, &s(&t.env, "  name mismatch  "));
     assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
+}
+
+#[test]
+fn external_ref_round_trips_and_is_emitted() {
+    let t = setup();
+    let ext = key(&t.env, 0xEE);
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+        &Some(ext.clone()),
+    );
+    // `events()` only reports the most recent invocation, so check before any read call.
+    let expected = PaymentSubmitted {
+        id,
+        from_vasp: t.vasp_a.clone(),
+        to_vasp: t.vasp_b.clone(),
+        amount: 5_000,
+        requires_attestation: true,
+        external_ref: Some(ext.clone()),
+    }
+    .to_xdr(&t.env, &t.client.address);
+    assert!(t.env.events().all().events().contains(&expected));
+
+    assert_eq!(t.client.get_payment(&id).external_ref, Some(ext));
+}
+
+#[test]
+fn external_ref_is_optional() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &100,
+        &None,
+    );
+    assert_eq!(t.client.get_payment(&id).external_ref, None);
 }
 
 #[test]
@@ -309,9 +353,14 @@ fn suspend_vasp_blocks_payments() {
     let t = setup();
     t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
     assert!(!t.client.is_vasp_active(&t.vasp_b));
-    let r =
-        t.client
-            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &100);
+    let r = t.client.try_submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &100,
+        &None,
+    );
     assert_eq!(r, Err(Ok(Error::VaspNotActive)));
 }
 
@@ -322,9 +371,14 @@ fn expired_vasp_is_inactive() {
     assert!(t.client.is_vasp_active(&t.vasp_a));
     t.env.ledger().set_timestamp(2_000);
     assert!(!t.client.is_vasp_active(&t.vasp_a));
-    let r =
-        t.client
-            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &100);
+    let r = t.client.try_submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &100,
+        &None,
+    );
     assert_eq!(r, Err(Ok(Error::VaspNotActive)));
 }
 
@@ -379,6 +433,7 @@ fn below_threshold_settles_immediately() {
         &t.beneficiary,
         &t.token.address,
         &2_999,
+        &None,
     );
     let p = t.client.get_payment(&id);
     assert_eq!(p.status, PaymentStatus::Released);
@@ -396,6 +451,7 @@ fn above_threshold_full_flow() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     let p = t.client.get_payment(&id);
     assert_eq!(p.status, PaymentStatus::Pending);
@@ -432,6 +488,7 @@ fn reject_refunds_originator() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     t.client
         .reject_payment(&id, &t.vasp_b, &s(&t.env, "beneficiary name mismatch"));
@@ -451,6 +508,7 @@ fn admin_can_release_and_outsider_cannot() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     t.client
         .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
@@ -477,6 +535,7 @@ fn reclaim_only_after_expiry() {
         &t.beneficiary,
         &t.token.address,
         &5_000,
+        &None,
     );
     assert_eq!(
         t.client.try_reclaim_expired(&id),
@@ -494,18 +553,18 @@ fn invalid_payments_rejected() {
     let a = &t.token.address;
     assert_eq!(
         t.client
-            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &0),
+            .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &0, &None),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
         t.client
-            .try_submit_payment(&t.vasp_a, &t.vasp_a, &t.beneficiary, a, &10),
+            .try_submit_payment(&t.vasp_a, &t.vasp_a, &t.beneficiary, a, &10, &None),
         Err(Ok(Error::SameVasp))
     );
     let stranger = Address::generate(&t.env);
     assert_eq!(
         t.client
-            .try_submit_payment(&stranger, &t.vasp_b, &t.beneficiary, a, &10),
+            .try_submit_payment(&stranger, &t.vasp_b, &t.beneficiary, a, &10, &None),
         Err(Ok(Error::VaspNotFound))
     );
     assert_eq!(
@@ -520,12 +579,12 @@ fn payment_ids_increment() {
     let a = &t.token.address;
     assert_eq!(
         t.client
-            .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &10),
+            .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &10, &None),
         0
     );
     assert_eq!(
         t.client
-            .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &10),
+            .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &10, &None),
         1
     );
     assert_eq!(t.client.payment_count(), 2);
@@ -536,9 +595,14 @@ fn uncovered_jurisdiction_requires_attestation() {
     let t = setup();
     // vasp_b is GB and there is no GB or "*" rule -> threshold 0 -> held
     StellarAssetClient::new(&t.env, &t.token.address).mint(&t.vasp_b, &100);
-    let id = t
-        .client
-        .submit_payment(&t.vasp_b, &t.vasp_a, &t.beneficiary, &t.token.address, &1);
+    let id = t.client.submit_payment(
+        &t.vasp_b,
+        &t.vasp_a,
+        &t.beneficiary,
+        &t.token.address,
+        &1,
+        &None,
+    );
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);

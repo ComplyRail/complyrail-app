@@ -37,6 +37,7 @@ export interface RawPayment {
   status: Tagged
   requires_attestation: boolean
   attestation_hash?: Uint8Array | null
+  external_ref?: Uint8Array | null
   ivms_version?: string | null
   attested_at?: bigint | null
   created_at: bigint
@@ -69,6 +70,7 @@ export function mapPayment(r: RawPayment): PaymentRecord {
     status: r.status.tag.toLowerCase() as PaymentStatus,
     requiresAttestation: r.requires_attestation,
     attestationHash: r.attestation_hash ? bytesToHex(r.attestation_hash) : undefined,
+    externalRef: r.external_ref ? bytesToHex(r.external_ref) : undefined,
     ivmsVersion: r.ivms_version ?? undefined,
     attestedAt: optNum(r.attested_at),
     createdAt: Number(r.created_at),
@@ -295,9 +297,18 @@ export function setThreshold(signer: Signer, asset: string, jurisdiction: string
   return write<void>(signer, 'set_threshold', { asset, jurisdiction, amount })
 }
 
+/** Optional 32-byte external reference as hex, or undefined when blank. Throws on malformed hex. */
+export function externalRefArg(hex?: string): Uint8Array | undefined {
+  const trimmed = hex?.trim()
+  if (!trimmed) return undefined
+  const bytes = hexToBytes(trimmed)
+  if (bytes.length !== 32) throw new Error('External reference must be 32 bytes (64 hex characters)')
+  return bytes
+}
+
 export async function submitPayment(
   signer: Signer,
-  p: { toVasp: string; beneficiary: string; asset: string; amount: bigint },
+  p: { toVasp: string; beneficiary: string; asset: string; amount: bigint; externalRef?: string },
 ): Promise<string> {
   const id = await write<bigint>(signer, 'submit_payment', {
     from_vasp: signer.publicKey,
@@ -305,6 +316,7 @@ export async function submitPayment(
     beneficiary: p.beneficiary,
     asset: p.asset,
     amount: p.amount,
+    external_ref: externalRefArg(p.externalRef),
   })
   return id.toString()
 }

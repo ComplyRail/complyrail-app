@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildIvmsPayload,
+  externalRefArg,
   mapEvent,
   mapPayment,
   mapVasp,
@@ -66,6 +67,12 @@ describe('mapPayment', () => {
     expect(p.requiresAttestation).toBe(true)
     expect(p.attestationHash).toBeUndefined()
     expect(p.expiresAt).toBe(700)
+  })
+
+  it('maps the external reference as hex, or leaves it undefined', () => {
+    expect(mapPayment(raw).externalRef).toBeUndefined()
+    const ref = new Uint8Array(32).fill(0xee)
+    expect(mapPayment({ ...raw, external_ref: ref }).externalRef).toBe('ee'.repeat(32))
   })
 
   it('maps attestation and resolution fields', () => {
@@ -135,3 +142,38 @@ describe('helpers', () => {
     expect(await sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
   })
 })
+
+describe('externalRefArg', () => {
+  it('returns undefined for a blank value', () => {
+    expect(externalRefArg(undefined)).toBeUndefined()
+    expect(externalRefArg('')).toBeUndefined()
+    expect(externalRefArg('   ')).toBeUndefined()
+  })
+
+  it('round-trips a 32-byte reference through hex', () => {
+    const hex = 'ab'.repeat(31) + 'cd'
+    const bytes = externalRefArg(hex)!
+    expect(bytes.length).toBe(32)
+    expect(mapPayment({ ...rawPaymentFixture(), external_ref: bytes }).externalRef).toBe(hex)
+  })
+
+  it('rejects malformed or wrong-length references', () => {
+    expect(() => externalRefArg('zz')).toThrow()
+    expect(() => externalRefArg('ab'.repeat(16))).toThrow('32 bytes')
+  })
+})
+
+function rawPaymentFixture(): RawPayment {
+  return {
+    id: 1n,
+    from_vasp: G1,
+    to_vasp: G2,
+    beneficiary: G2,
+    asset: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+    amount: 1n,
+    status: { tag: 'Pending' },
+    requires_attestation: false,
+    created_at: 1n,
+    expires_at: 2n,
+  }
+}

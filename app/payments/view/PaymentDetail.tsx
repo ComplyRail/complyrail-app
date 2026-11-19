@@ -101,6 +101,7 @@ export function PaymentDetail({ id }: { id: string }) {
         <Card title="Attestation">
           <Row label="IVMS101 payload hash (sha256)"><span className="font-mono break-all">{payment.attestationHash}</span></Row>
           {payment.ivmsVersion && <Row label="Version">{payment.ivmsVersion}</Row>}
+          {payment.externalRef && <Row label="External ref"><code className="break-all">{payment.externalRef}</code></Row>}
           {payment.attestedAt && <Row label="Submitted">{new Date(payment.attestedAt * 1000).toLocaleString()}</Row>}
         </Card>
       )}
