@@ -62,6 +62,9 @@ const CONTRACT_ERRORS: Record<number, string> = {
   12: 'This payment has not expired yet',
   13: 'Sender and receiver VASP must be different',
   14: 'Threshold must be zero or more',
+  15: 'This payment already has an attestation and can no longer be cancelled',
+  17: 'This VASP already has the maximum number of open payments. Resolve some before submitting more',
+  16: 'The token transfer failed. Check the sender balance and that the recipient can receive this asset (trustline)',
 }
 
 export function friendlyError(e: unknown): string {
