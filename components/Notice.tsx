@@ -62,6 +62,7 @@ const CONTRACT_ERRORS: Record<number, string> = {
   12: 'This payment has not expired yet',
   13: 'Sender and receiver VASP must be different',
   14: 'Threshold must be zero or more',
+  15: 'This payment has expired and can no longer be attested or released; the originator can reclaim it',
 }
 
 export function friendlyError(e: unknown): string {
