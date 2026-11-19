@@ -152,7 +152,7 @@ export function PaymentDetail({ id }: { id: string }) {
               <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
                 maxLength={FIELD_LIMITS.reason}
                 className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm" />
-              <button disabled={tx.pending || !reason || !!lengthError('Reason', reason, FIELD_LIMITS.reason)}
+              <button disabled={tx.pending || !reason.trim() || !!lengthError('Reason', reason, FIELD_LIMITS.reason)}
                 onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
                 className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
                 Reject

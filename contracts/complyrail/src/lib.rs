@@ -246,6 +246,20 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
+/// Rejects a reason that is empty or made only of ASCII whitespace
+/// (space, tab, CR, LF, form feed). Length is already bounded by
+/// `MAX_REASON_LEN`, so a stack buffer of that size is enough.
+fn check_reason_not_blank(reason: &String) -> Result<(), Error> {
+    let n = reason.len() as usize;
+    let mut buf = [0u8; MAX_REASON_LEN as usize];
+    reason.copy_into_slice(&mut buf[..n]);
+    // `all` is true for an empty slice, so empty reasons are rejected here too.
+    if buf[..n].iter().all(|b| b.is_ascii_whitespace()) {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
+}
+
 /// Rejects a free-text value longer than `max` bytes.
 fn check_max_len(value: &String, max: u32) -> Result<(), Error> {
     if value.len() > max {
@@ -624,7 +638,8 @@ impl ComplyRail {
     }
 
     /// Beneficiary VASP or admin rejects a held payment; funds go back to the
-    /// originating VASP. `reason` is emitted for the audit trail.
+    /// originating VASP. `reason` is emitted for the audit trail and must be
+    /// non-blank (`Error::InvalidInput` if empty or whitespace-only).
     pub fn reject_payment(
         env: Env,
         payment_id: u64,
@@ -633,6 +648,7 @@ impl ComplyRail {
     ) -> Result<(), Error> {
         caller.require_auth();
         check_max_len(&reason, MAX_REASON_LEN)?;
+        check_reason_not_blank(&reason)?;
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {

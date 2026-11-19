@@ -234,6 +234,34 @@ fn reject_payment_enforces_reason_limit() {
 }
 
 #[test]
+fn reject_payment_rejects_blank_reason() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(
+        t.client.try_reject_payment(&id, &t.vasp_b, &s(&t.env, "")),
+        Err(Ok(Error::InvalidInput))
+    );
+    assert_eq!(
+        t.client
+            .try_reject_payment(&id, &t.vasp_b, &s(&t.env, "   \t\r\n ")),
+        Err(Ok(Error::InvalidInput))
+    );
+    // a blank reason leaves the payment pending and the funds in escrow
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+    assert_eq!(t.token.balance(&t.client.address), 5_000);
+    // surrounding whitespace around real text is fine
+    t.client
+        .reject_payment(&id, &t.vasp_b, &s(&t.env, "  name mismatch  "));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
+}
+
+#[test]
 fn transfer_admin_works() {
     let t = setup();
     let new_admin = Address::generate(&t.env);
