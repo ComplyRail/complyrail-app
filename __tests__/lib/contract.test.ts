@@ -54,8 +54,10 @@ describe('mapPayment', () => {
     ivms_version: undefined,
     attested_at: undefined,
     created_at: 100n,
+    created_ledger: 42,
     expires_at: 700n,
     resolved_at: undefined,
+    resolved_ledger: undefined,
   }
 
   it('maps a held payment without attestation', () => {
@@ -76,11 +78,19 @@ describe('mapPayment', () => {
       ivms_version: 'IVMS101.2023',
       attested_at: 200n,
       resolved_at: 300n,
+      resolved_ledger: 77,
     })
     expect(p.status).toBe(PaymentStatus.Released)
     expect(p.attestationHash).toBe('01'.repeat(32))
     expect(p.ivmsVersion).toBe('IVMS101.2023')
     expect(p.resolvedAt).toBe(300)
+    expect(p.resolvedLedger).toBe(77)
+  })
+
+  it('maps created and resolved ledger sequences', () => {
+    const p = mapPayment(raw)
+    expect(p.createdLedger).toBe(42)
+    expect(p.resolvedLedger).toBeUndefined()
   })
 })
 
@@ -99,6 +109,17 @@ describe('mapEvent', () => {
     expect(e!.details!.amount).toBe('2.5')
     expect(e!.details!.requires_attestation).toBe('true')
     expect(e!.timestamp).toBe(Date.parse('2026-11-08T12:00:00Z') / 1000)
+  })
+
+  it('keeps ledger sequences in audit details', () => {
+    const sub = mapEvent({
+      ...base,
+      topics: ['pay_sub', 3n],
+      data: { from_vasp: G1, to_vasp: G2, amount: 1n, requires_attestation: true, created_ledger: 42 },
+    })
+    expect(sub!.details!.created_ledger).toBe('42')
+    const rel = mapEvent({ ...base, topics: ['pay_rel', 3n], data: { amount: 1n, resolved_ledger: 77 } })
+    expect(rel!.details!.resolved_ledger).toBe('77')
   })
 
   it('renders enum values by tag', () => {
