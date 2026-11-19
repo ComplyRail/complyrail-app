@@ -24,7 +24,7 @@ export function PaymentDetail({ id }: { id: string }) {
   const { admin } = useAdmin()
   const { address } = useWallet()
   const tx = useTx()
-  const [names, setNames] = useState({ originator: '', beneficiary: '' })
+  const [names, setNames] = useState({ originator: '', originatorAccount: '', beneficiary: '' })
   const [payloadJson, setPayloadJson] = useState<string | null>(null)
   const [reason, setReason] = useState('')
 
@@ -50,7 +50,7 @@ export function PaymentDetail({ id }: { id: string }) {
     const payload = buildIvmsPayload({
       paymentId: payment.id,
       originatorName: names.originator,
-      originatorAccount: payment.fromVasp,
+      originatorAccount: names.originatorAccount,
       beneficiaryName: names.beneficiary,
       beneficiaryAccount: payment.beneficiary,
       amount: fromUnits(payment.amount),
@@ -116,6 +116,9 @@ export function PaymentDetail({ id }: { id: string }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <input required placeholder="Originator full name" value={names.originator}
               onChange={e => setNames({ ...names, originator: e.target.value })}
+              className="px-3 py-2 border border-border rounded bg-background" />
+            <input required placeholder="Originator account (customer account number)" value={names.originatorAccount}
+              onChange={e => setNames({ ...names, originatorAccount: e.target.value })}
               className="px-3 py-2 border border-border rounded bg-background" />
             <input required placeholder="Beneficiary full name" value={names.beneficiary}
               onChange={e => setNames({ ...names, beneficiary: e.target.value })}

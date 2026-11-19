@@ -122,6 +122,16 @@ describe('helpers', () => {
     expect(() => unwrap({ unwrap: () => { throw new Error('boom') } })).toThrow('boom')
   })
 
+  it('uses the customer account as originator accountNumber, not the VASP address', () => {
+    const customer = 'CUST-000123'
+    const payload = buildIvmsPayload({
+      paymentId: '1', originatorName: 'Ada', originatorAccount: customer,
+      beneficiaryName: 'Bola', beneficiaryAccount: G2, amount: '10', asset: 'USDC',
+    })
+    expect(payload.originator.accountNumber).toEqual([customer])
+    expect(payload.originator.accountNumber).not.toContain(G1)
+  })
+
   it('hashes the IVMS101 payload deterministically', async () => {
     const payload = buildIvmsPayload({
       paymentId: '1', originatorName: 'Ada', originatorAccount: G1,
