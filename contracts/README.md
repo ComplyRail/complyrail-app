@@ -53,6 +53,20 @@ stellar contract build                             # builds the WASM
 
 Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) v25.2+ (`soroban-sdk` 29 must be built with `stellar contract build`).
 
+## WASM size budget
+
+CI records the size of the release WASM in the job summary and fails if it grows more than 5% over `contracts/complyrail/wasm-size-baseline.txt`. The file holds the size in bytes of the last accepted build.
+
+When a change makes the contract bigger on purpose, update the baseline in the same PR:
+
+```bash
+cd contracts/complyrail
+stellar contract build
+stat -c %s target/wasm32v1-none/release/complyrail.wasm > wasm-size-baseline.txt
+```
+
+Explain the growth in the PR description.
+
 ## Dependency advisories
 
 CI runs `cargo deny check advisories` against the RustSec database on every change to the contract. The policy lives in `contracts/complyrail/deny.toml`.
