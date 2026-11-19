@@ -1,6 +1,15 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { bytesToHex, formatAddress, formatHash, fromUnits, hexToBytes, toUnits } from '@/lib/format'
+import {
+  bytesToHex,
+  formatAddress,
+  formatHash,
+  fromUnits,
+  hexToBytes,
+  parseVaspKey,
+  toUnits,
+  vaspKeyError,
+} from '@/lib/format'
 
 describe('toUnits', () => {
   it('converts whole and fractional amounts to 7-decimal units', () => {
@@ -51,5 +60,26 @@ describe('display helpers', () => {
     expect(formatAddress('GABCDEFGHIJKLMNOP')).toBe('GABC...MNOP')
     expect(formatAddress('short')).toBe('short')
     expect(formatHash('0123456789abcdef0123')).toBe('012345...ef0123')
+  })
+})
+
+describe('VASP key validation', () => {
+  it('accepts exactly 64 hex characters', () => {
+    expect(vaspKeyError('ab'.repeat(32))).toBeNull()
+    expect(parseVaspKey('ab'.repeat(32))).toEqual(new Uint8Array(32).fill(0xab))
+  })
+
+  it('rejects an empty key', () => {
+    expect(vaspKeyError('')).toMatch(/required/)
+    expect(() => parseVaspKey('')).toThrow(/required/)
+  })
+
+  it('rejects short and long keys with the length in the message', () => {
+    expect(vaspKeyError('ab'.repeat(31))).toMatch(/64 hex characters \(got 62\)/)
+    expect(() => parseVaspKey('ab'.repeat(33))).toThrow(/got 66/)
+  })
+
+  it('rejects non-hex characters of the right length', () => {
+    expect(vaspKeyError('zz'.repeat(32))).not.toBeNull()
   })
 })

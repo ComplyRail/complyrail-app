@@ -43,3 +43,22 @@ export function hexToBytes(hex: string): Uint8Array {
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
   return out
 }
+
+/** VASP encryption keys are 32 bytes, written as 64 hex characters. */
+export const VASP_KEY_HEX_LENGTH = 64
+
+/** Returns a user-facing error for a malformed VASP key, or null when it is valid. */
+export function vaspKeyError(hex: string): string | null {
+  if (!hex) return 'Encryption key is required'
+  if (hex.length !== VASP_KEY_HEX_LENGTH || !/^[0-9a-fA-F]+$/.test(hex)) {
+    return `Encryption key must be 32 bytes as ${VASP_KEY_HEX_LENGTH} hex characters (got ${hex.length})`
+  }
+  return null
+}
+
+/** Parse a VASP encryption key, throwing the same message as `vaspKeyError`. */
+export function parseVaspKey(hex: string): Uint8Array {
+  const err = vaspKeyError(hex)
+  if (err) throw new Error(err)
+  return hexToBytes(hex)
+}
