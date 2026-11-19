@@ -9,6 +9,7 @@ import {
   ThresholdRow,
   VaspEntry,
   VaspStatus,
+  IVMS101_VERSION,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -349,7 +350,7 @@ export function buildIvmsPayload(p: {
   asset: string
 }) {
   return {
-    ivms101Version: '2023',
+    ivms101Version: IVMS101_VERSION,
     paymentId: p.paymentId,
     originator: {
       originatorPersons: [{ naturalPerson: { name: { nameIdentifier: [{ primaryIdentifier: p.originatorName }] } } }],

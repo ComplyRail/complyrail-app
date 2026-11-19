@@ -15,7 +15,7 @@ import {
   sha256Hex,
   submitAttestation,
 } from '@/lib/contract'
-import { PaymentStatus } from '@/lib/types'
+import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
 
 export function PaymentDetail({ id }: { id: string }) {
   const { payment, loading, error, reload } = usePayment(id)
@@ -59,7 +59,7 @@ export function PaymentDetail({ id }: { id: string }) {
     const json = JSON.stringify(payload)
     const hash = await sha256Hex(json)
     setPayloadJson(JSON.stringify(payload, null, 2))
-    await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, 'IVMS101.2023'))
+    await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, IVMS101_VERSION))
   }
 
   return (
