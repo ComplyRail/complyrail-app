@@ -583,3 +583,60 @@ fn immediate_settlement_records_both_ledgers() {
     assert_eq!(p.created_ledger, 900);
     assert_eq!(p.resolved_ledger, Some(900));
 }
+
+// ----- minimum payment amount (issue #36) ---------------------------------
+
+#[test]
+fn min_amount_boundary() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_min_amount(&token, &1_000);
+    assert_eq!(t.client.get_min_amount(&token), 1_000);
+
+    let below = t
+        .client
+        .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &999);
+    assert_eq!(below, Err(Ok(Error::BelowMinAmount)));
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+
+    // Exactly the minimum is accepted.
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &1_000);
+    assert_eq!(t.token.balance(&t.vasp_a), 999_000);
+}
+
+#[test]
+fn min_amount_is_per_asset() {
+    let t = setup();
+    let token = t.token.address.clone();
+    let other = t
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&t.env))
+        .address();
+    StellarAssetClient::new(&t.env, &other).mint(&t.vasp_a, &10_000);
+    t.client.set_min_amount(&token, &1_000);
+
+    // The other asset has no minimum, so a 1 stroop payment passes.
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &other, &1);
+    assert_eq!(t.client.get_min_amount(&other), 0);
+}
+
+#[test]
+fn zero_min_amount_accepts_any_positive_amount() {
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_min_amount(&token, &1_000);
+    t.client.set_min_amount(&token, &0);
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &token, &1);
+}
+
+#[test]
+fn negative_min_amount_rejected() {
+    let t = setup();
+    let token = t.token.address.clone();
+    let r = t.client.try_set_min_amount(&token, &-5);
+    assert_eq!(r, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(t.client.get_min_amount(&token), 0);
+}

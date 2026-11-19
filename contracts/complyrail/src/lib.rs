@@ -64,6 +64,8 @@ pub enum Error {
     BatchTooLarge = 16,
     /// Holding this payment would push the originator's escrow exposure over its cap.
     ExposureCapExceeded = 17,
+    /// Payment amount is below the configured minimum for the asset.
+    BelowMinAmount = 18,
 }
 
 #[contracttype]
@@ -135,6 +137,8 @@ enum DataKey {
     Payment(u64),
     /// Per-(originator, asset) cap on value held in escrow.
     ExposureCap(Address, Address),
+    /// Smallest payment accepted for an asset.
+    MinAmount(Address),
     /// Per-(originator, asset) sum of currently held (pending) amounts.
     Exposure(Address, Address),
 }
@@ -526,6 +530,27 @@ impl ComplyRail {
         Ok(())
     }
 
+    /// Admin sets the smallest payment accepted in `asset`. `0` disables the
+    /// minimum (any positive amount is accepted).
+    pub fn set_min_amount(env: Env, asset: Address, amount: i128) -> Result<(), Error> {
+        require_admin(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let key = DataKey::MinAmount(asset);
+        env.storage().persistent().set(&key, &amount);
+        bump_persistent(&env, &key);
+        Ok(())
+    }
+
+    /// Smallest accepted payment in `asset` (0 when unset).
+    pub fn get_min_amount(env: Env, asset: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MinAmount(asset))
+            .unwrap_or(0)
+    }
+
     /// Current cap for `vasp` in `asset`, or `None` when uncapped.
     pub fn get_exposure_cap(env: Env, vasp: Address, asset: Address) -> Option<i128> {
         env.storage()
@@ -554,6 +579,14 @@ impl ComplyRail {
         from_vasp.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        let min_amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MinAmount(asset.clone()))
+            .unwrap_or(0);
+        if amount < min_amount {
+            return Err(Error::BelowMinAmount);
         }
         if from_vasp == to_vasp {
             return Err(Error::SameVasp);
