@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { bytesToHex, formatAddress, formatHash, fromUnits, hexToBytes, toUnits } from '@/lib/format'
+import { bytesToHex, exceedsBalance, formatAddress, formatHash, fromUnits, hexToBytes, toUnits } from '@/lib/format'
 
 describe('toUnits', () => {
   it('converts whole and fractional amounts to 7-decimal units', () => {
@@ -51,5 +51,20 @@ describe('display helpers', () => {
     expect(formatAddress('GABCDEFGHIJKLMNOP')).toBe('GABC...MNOP')
     expect(formatAddress('short')).toBe('short')
     expect(formatHash('0123456789abcdef0123')).toBe('012345...ef0123')
+  })
+})
+
+describe('exceedsBalance', () => {
+  it('flags an amount larger than the balance', () => {
+    expect(exceedsBalance(10_000_001n, 10_000_000n)).toBe(true)
+  })
+
+  it('allows an amount equal to or below the balance', () => {
+    expect(exceedsBalance(10_000_000n, 10_000_000n)).toBe(false)
+    expect(exceedsBalance(1n, 10_000_000n)).toBe(false)
+  })
+
+  it('does not block while the balance is still unknown', () => {
+    expect(exceedsBalance(10n ** 18n, null)).toBe(false)
   })
 })

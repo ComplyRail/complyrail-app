@@ -19,7 +19,7 @@
 //!
 //! Every state change emits an event whose topic matches the dashboard's
 //! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`,
-//! `pay_rel`, `pay_rej`).
+//! `pay_rel`, `pay_rej`, `pay_recl`).
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
@@ -299,6 +299,14 @@ pub struct PaymentRejected {
     #[topic]
     pub id: u64,
     pub reason: String,
+}
+
+#[contractevent(topics = ["pay_recl"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentReclaimed {
+    #[topic]
+    pub id: u64,
+    pub amount: i128,
 }
 
 // ---------------------------------------------------------------------------
@@ -623,10 +631,11 @@ impl ComplyRail {
             return Err(Error::PaymentNotExpired);
         }
         let to = p.from_vasp.clone();
+        let amount = p.amount;
         settle(&env, &mut p, &to, PaymentStatus::Reclaimed);
-        PaymentRejected {
+        PaymentReclaimed {
             id: payment_id,
-            reason: String::from_str(&env, "expired"),
+            amount,
         }
         .publish(&env);
         Ok(())
