@@ -1,10 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::{testutils::Events as _, xdr};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, String, TryFromVal,
 };
 
 struct Setup<'a> {
@@ -268,8 +269,12 @@ fn reject_refunds_originator() {
         &t.token.address,
         &5_000,
     );
-    t.client
-        .reject_payment(&id, &t.vasp_b, &s(&t.env, "beneficiary name mismatch"));
+    t.client.reject_payment(
+        &id,
+        &t.vasp_b,
+        &s(&t.env, "beneficiary name mismatch"),
+        &None,
+    );
     assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
     assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
     // cannot act on a resolved payment
@@ -377,4 +382,331 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- event assertions ----------------------------------------------------
+
+/// Asserts that the most recent event emitted by the contract is exactly
+/// `expected`: same topics, same data, same emitting contract.
+fn assert_last_event(t: &Setup, expected: &impl soroban_sdk::Event) {
+    let env = &t.env;
+    let all = env.events().all().filter_by_contract(&t.client.address);
+    let last = all.events().last().expect("no events emitted");
+    let xdr::ContractEventBody::V0(body) = &last.body;
+    let topics = expected.topics(env);
+    assert_eq!(body.topics.len() as u32, topics.len());
+    for (i, topic) in topics.iter().enumerate() {
+        assert_eq!(
+            body.topics[i],
+            xdr::ScVal::try_from_val(env, &topic).unwrap()
+        );
+    }
+    assert_eq!(
+        body.data,
+        xdr::ScVal::try_from_val(env, &expected.data(env)).unwrap()
+    );
+}
+
+// ----- rejection evidence (#45) --------------------------------------------
+
+#[test]
+fn reject_with_evidence_hash_emits_it() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let reason = s(&t.env, "beneficiary name mismatch");
+    t.client
+        .reject_payment(&id, &t.vasp_b, &reason, &Some(key(&t.env, 9)));
+    assert_last_event(
+        &t,
+        &PaymentRejected {
+            id,
+            reason,
+            evidence_hash: Some(key(&t.env, 9)),
+        },
+    );
+}
+
+#[test]
+fn reject_without_evidence_hash_emits_none() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let reason = s(&t.env, "duplicate");
+    t.client.reject_payment(&id, &t.vasp_b, &reason, &None);
+    assert_last_event(
+        &t,
+        &PaymentRejected {
+            id,
+            reason,
+            evidence_hash: None,
+        },
+    );
+}
+
+#[test]
+fn expiry_reclaim_emits_no_evidence_hash() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+    assert_last_event(
+        &t,
+        &PaymentRejected {
+            id,
+            reason: s(&t.env, "expired"),
+            evidence_hash: None,
+        },
+    );
+}
+
+// ----- key rotation (#46) --------------------------------------------------
+
+#[test]
+fn rotate_key_updates_key_and_emits_hashes() {
+    let t = setup();
+    let before = t.client.get_vasp(&t.vasp_a);
+    let new_key = key(&t.env, 5);
+    t.client.rotate_vasp_key(&t.vasp_a, &new_key);
+    // checked before any other client call, which would reset the event buffer
+    assert_last_event(
+        &t,
+        &VaspKeyRotated {
+            address: t.vasp_a.clone(),
+            old_key_hash: key_hash(&t.env, &before.public_key),
+            new_key_hash: key_hash(&t.env, &new_key),
+        },
+    );
+
+    let after = t.client.get_vasp(&t.vasp_a);
+    assert_eq!(after.public_key, new_key);
+    // everything else on the registry entry is untouched
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.jurisdiction, before.jurisdiction);
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.added_at, before.added_at);
+    assert_eq!(after.expires_at, before.expires_at);
+}
+
+#[test]
+fn rotation_does_not_change_payments() {
+    let t = setup();
+    // held payment (above the US threshold) submitted before the rotation
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let before = t.client.get_payment(&id);
+
+    t.client.rotate_vasp_key(&t.vasp_b, &key(&t.env, 6));
+    t.client.rotate_vasp_key(&t.vasp_a, &key(&t.env, 7));
+
+    assert_eq!(t.client.get_payment(&id), before);
+
+    // the in-flight payment still settles between the same parties
+    t.client
+        .submit_attestation(&id, &key(&t.env, 8), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.vasp_b);
+    let released = t.client.get_payment(&id);
+    assert_eq!(released.status, PaymentStatus::Released);
+    assert_eq!(released.from_vasp, t.vasp_a);
+    assert_eq!(released.to_vasp, t.vasp_b);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+
+    // and payments submitted after the rotation work as before
+    let next = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &100,
+    );
+    assert_eq!(t.client.get_payment(&next).status, PaymentStatus::Released);
+}
+
+#[test]
+fn rotate_unknown_vasp_fails() {
+    let t = setup();
+    let r = t
+        .client
+        .try_rotate_vasp_key(&Address::generate(&t.env), &key(&t.env, 5));
+    assert_eq!(r, Err(Ok(Error::VaspNotFound)));
+}
+
+#[test]
+#[should_panic]
+fn rotate_key_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    // no mock_all_auths(): admin has not signed
+    let client = ComplyRailClient::new(&env, &id);
+    client.rotate_vasp_key(&Address::generate(&env), &key(&env, 5));
+}
+
+// ----- metadata updates (#47) ----------------------------------------------
+
+#[test]
+fn update_vasp_changes_fields_and_emits_old_and_new() {
+    let t = setup();
+    let before = t.client.get_vasp(&t.vasp_a);
+    let new_name = s(&t.env, "Acme Exchange Ltd");
+    let new_jurisdiction = s(&t.env, "GB");
+    t.client
+        .update_vasp(&t.vasp_a, &new_name, &new_jurisdiction);
+
+    assert_last_event(
+        &t,
+        &VaspMetadataUpdated {
+            address: t.vasp_a.clone(),
+            old_name: before.name,
+            new_name: new_name.clone(),
+            old_jurisdiction: before.jurisdiction,
+            new_jurisdiction: new_jurisdiction.clone(),
+        },
+    );
+
+    let after = t.client.get_vasp(&t.vasp_a);
+    assert_eq!(after.name, new_name);
+    assert_eq!(after.jurisdiction, new_jurisdiction);
+    // key, status and expiry are not touched by a metadata update
+    assert_eq!(after.public_key, key(&t.env, 1));
+    assert_eq!(after.status, VaspStatus::Active);
+    assert_eq!(after.expires_at, None);
+}
+
+#[test]
+fn jurisdiction_change_applies_to_new_payments_only() {
+    let t = setup();
+    // US threshold is 3_000 (set in setup); GB gets its own, higher rule
+    t.client
+        .set_threshold(&t.token.address, &s(&t.env, "GB"), &10_000);
+
+    // under US: 5_000 is at or above 3_000 -> held for attestation
+    let held = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert!(t.client.get_payment(&held).requires_attestation);
+
+    t.client
+        .update_vasp(&t.vasp_a, &s(&t.env, "Acme Exchange"), &s(&t.env, "GB"));
+
+    // the pending payment keeps the decision it was submitted with
+    let still_held = t.client.get_payment(&held);
+    assert!(still_held.requires_attestation);
+    assert_eq!(still_held.status, PaymentStatus::Pending);
+    t.client
+        .submit_attestation(&held, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&held, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&held).status, PaymentStatus::Released);
+
+    // a payment submitted after the change is judged under GB
+    let fresh = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let fresh = t.client.get_payment(&fresh);
+    assert!(!fresh.requires_attestation);
+    assert_eq!(fresh.status, PaymentStatus::Released);
+}
+
+#[test]
+fn update_unknown_vasp_fails() {
+    let t = setup();
+    let r = t.client.try_update_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "x"),
+        &s(&t.env, "US"),
+    );
+    assert_eq!(r, Err(Ok(Error::VaspNotFound)));
+}
+
+#[test]
+#[should_panic]
+fn update_vasp_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    // no mock_all_auths(): admin has not signed
+    let client = ComplyRailClient::new(&env, &id);
+    client.update_vasp(
+        &Address::generate(&env),
+        &s(&env, "x"),
+        &s(&env, "US"),
+    );
+}
+
+// ----- jurisdiction validation (#48) ---------------------------------------
+
+#[test]
+fn register_rejects_wildcard_jurisdiction() {
+    let t = setup();
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Wild"),
+        &s(&t.env, "*"),
+        &key(&t.env, 9),
+        &None,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+}
+
+#[test]
+fn register_rejects_empty_jurisdiction() {
+    let t = setup();
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Nowhere"),
+        &s(&t.env, ""),
+        &key(&t.env, 9),
+        &None,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+}
+
+#[test]
+fn update_rejects_wildcard_jurisdiction() {
+    let t = setup();
+    let r = t
+        .client
+        .try_update_vasp(&t.vasp_a, &s(&t.env, "Acme Exchange"), &s(&t.env, "*"));
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+    // rejected update leaves the entry as it was
+    assert_eq!(t.client.get_vasp(&t.vasp_a).jurisdiction, s(&t.env, "US"));
+}
+
+#[test]
+fn update_rejects_empty_jurisdiction() {
+    let t = setup();
+    let r = t
+        .client
+        .try_update_vasp(&t.vasp_a, &s(&t.env, "Acme Exchange"), &s(&t.env, ""));
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+    assert_eq!(t.client.get_vasp(&t.vasp_a).jurisdiction, s(&t.env, "US"));
 }

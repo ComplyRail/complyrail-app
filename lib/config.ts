@@ -44,3 +44,9 @@ export function assetSymbol(contractId: string): string {
 
 /** ISO-style jurisdiction codes offered in the UI. `*` is the contract's fallback rule. */
 export const JURISDICTIONS = ['US', 'GB', 'EU', 'SG', 'HK', 'JP', 'AU', 'CA', 'NG', '*']
+
+/** Mirrors the contract's `InvalidJurisdiction` rule: `"*"` is reserved for the threshold fallback. */
+export function isRegistrableJurisdiction(jurisdiction: string): boolean {
+  const j = jurisdiction.trim()
+  return j !== '' && j !== '*'
+}
