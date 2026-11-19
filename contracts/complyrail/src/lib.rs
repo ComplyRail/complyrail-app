@@ -284,6 +284,8 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+    /// `true` when the exact rule was removed (`amount` is then 0).
+    pub removed: bool,
 }
 
 #[contractevent(topics = ["pay_sub"])]
@@ -484,6 +486,25 @@ impl ComplyRail {
             asset,
             jurisdiction,
             amount,
+            removed: false,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Deletes the exact `(asset, jurisdiction)` rule so the `"*"` fallback
+    /// applies to that jurisdiction again. Removing a missing rule is a no-op.
+    pub fn remove_threshold(env: Env, asset: Address, jurisdiction: String) -> Result<(), Error> {
+        require_admin(&env)?;
+        let jurisdiction =
+            normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
+        let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
+        env.storage().persistent().remove(&key);
+        ThresholdSet {
+            asset,
+            jurisdiction,
+            amount: 0,
+            removed: true,
         }
         .publish(&env);
         Ok(())

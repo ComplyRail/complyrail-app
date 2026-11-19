@@ -427,3 +427,33 @@ fn jurisdiction_length_is_checked() {
         );
     }
 }
+
+#[test]
+fn wildcard_applies_after_threshold_removed() {
+    let t = setup();
+    let a = &t.token.address;
+    t.client.set_threshold(a, &s(&t.env, "*"), &1_000);
+    t.client.set_threshold(a, &s(&t.env, "SG"), &5_000);
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "SG")), 5_000);
+
+    t.client.remove_threshold(a, &s(&t.env, "SG"));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "SG")), 1_000);
+
+    // removing again is a no-op
+    t.client.remove_threshold(a, &s(&t.env, "SG"));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "SG")), 1_000);
+}
+
+#[test]
+fn remove_threshold_normalises_jurisdiction() {
+    let t = setup();
+    let a = &t.token.address;
+    t.client.set_threshold(a, &s(&t.env, "*"), &1_000);
+    t.client.set_threshold(a, &s(&t.env, "HK"), &7_000);
+    t.client.remove_threshold(a, &s(&t.env, "hk"));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "HK")), 1_000);
+    assert_eq!(
+        t.client.try_remove_threshold(a, &s(&t.env, "XX")),
+        Err(Ok(Error::UnknownJurisdiction))
+    );
+}
