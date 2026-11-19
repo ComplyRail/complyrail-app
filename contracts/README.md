@@ -27,13 +27,14 @@ originator VASP                     contract                      beneficiary VA
 
 | Function | Auth | Notes |
 |---|---|---|
-| `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days |
+| `__constructor(admin, threshold_admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; `threshold_admin` should be a different key from `admin`; TTL defaults to 7 days |
 | `transfer_admin(new_admin)` | admin + new admin | |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
-| `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
+| `set_vasp_status(address, status, reason)` | admin | `Active` / `Suspended` / `Revoked`. Suspend and revoke need a non-empty `reason` (max 256 bytes). `Revoked` is final. |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
-| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
+| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | threshold admin / – | The threshold admin is a separate role from the admin, so one key cannot both admit a VASP and lower a threshold |
+| `remove_threshold(asset, jurisdiction)` | threshold admin | Fails with `ThresholdNotFound` if no threshold is set for that jurisdiction |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |

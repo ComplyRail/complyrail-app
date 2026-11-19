@@ -17,9 +17,12 @@
 //!   IVMS101 payload exchanged off-chain, plus the IVMS101 version string.
 //!   Personal data never touches the ledger, only its hash.
 //!
+//! Two roles: the **admin** runs the VASP registry and the **threshold admin**
+//! sets Travel Rule thresholds, so one compromised key cannot do both.
+//!
 //! Every state change emits an event whose topic matches the dashboard's
-//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`,
-//! `pay_rel`, `pay_rej`).
+//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `thr_rm`, `pay_sub`,
+//! `att_sub`, `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
@@ -55,7 +58,20 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// A revoked VASP is terminal and cannot change status again.
+    VaspRevoked = 15,
+    /// Suspending or revoking a VASP requires a non-empty reason.
+    ReasonRequired = 16,
+    /// Reason exceeds `MAX_REASON_LEN` bytes.
+    ReasonTooLong = 17,
+    /// A supplied value is malformed, e.g. an expiry that is already past.
+    InvalidInput = 18,
+    /// `remove_threshold` was called for a jurisdiction with no threshold.
+    ThresholdNotFound = 19,
 }
+
+/// Upper bound on the reason attached to a status change, in bytes.
+pub const MAX_REASON_LEN: u32 = 256;
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,6 +130,7 @@ pub struct Payment {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    ThresholdAdmin,
     PaymentTtl,
     NextPaymentId,
     VaspList,
@@ -154,6 +171,19 @@ fn require_admin(env: &Env) -> Result<Address, Error> {
     Ok(a)
 }
 
+/// Travel Rule thresholds are governed by a separate role from the VASP
+/// registry, so compromising one key does not let an attacker both admit a
+/// VASP and lower the threshold that guards against it.
+fn require_threshold_admin(env: &Env) -> Result<Address, Error> {
+    let a: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::ThresholdAdmin)
+        .ok_or(Error::NotInitialized)?;
+    a.require_auth();
+    Ok(a)
+}
+
 fn load_vasp(env: &Env, addr: &Address) -> Result<VaspEntry, Error> {
     let key = DataKey::Vasp(addr.clone());
     let v: VaspEntry = env
@@ -169,6 +199,17 @@ fn save_vasp(env: &Env, v: &VaspEntry) {
     let key = DataKey::Vasp(v.address.clone());
     env.storage().persistent().set(&key, v);
     bump_persistent(env, &key);
+}
+
+/// An expiry in the past would make the VASP inactive as soon as it is
+/// written, which is almost always a data-entry mistake.
+fn require_future_expiry(env: &Env, expires_at: Option<u64>) -> Result<(), Error> {
+    if let Some(t) = expires_at {
+        if t <= env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
+    }
+    Ok(())
 }
 
 fn vasp_is_active(env: &Env, v: &VaspEntry) -> bool {
@@ -254,6 +295,8 @@ pub struct VaspUpdated {
     pub address: Address,
     pub status: VaspStatus,
     pub expires_at: Option<u64>,
+    /// Why the status changed. Empty for expiry-only updates.
+    pub reason: String,
 }
 
 #[contractevent(topics = ["thr_set"])]
@@ -263,6 +306,14 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+}
+
+#[contractevent(topics = ["thr_rm"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdRemoved {
+    #[topic]
+    pub asset: Address,
+    pub jurisdiction: String,
 }
 
 #[contractevent(topics = ["pay_sub"])]
@@ -311,9 +362,15 @@ impl ComplyRail {
     /// `admin` does not need to sign: the deployer chooses it.
     /// `payment_ttl` is how long (seconds) a held payment can wait before the
     /// originator may reclaim it; pass `None` for 7 days.
-    pub fn __constructor(env: Env, admin: Address, payment_ttl: Option<u64>) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        threshold_admin: Address,
+        payment_ttl: Option<u64>,
+    ) {
         let s = env.storage().instance();
         s.set(&DataKey::Admin, &admin);
+        s.set(&DataKey::ThresholdAdmin, &threshold_admin);
         s.set(
             &DataKey::PaymentTtl,
             &payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL),
@@ -347,6 +404,7 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        require_future_expiry(&env, expires_at)?;
         if env
             .storage()
             .persistent()
@@ -382,15 +440,35 @@ impl ComplyRail {
         Ok(())
     }
 
-    pub fn set_vasp_status(env: Env, address: Address, status: VaspStatus) -> Result<(), Error> {
+    /// Sets a VASP's status. Suspending or revoking requires a non-empty
+    /// `reason`; any reason is capped at `MAX_REASON_LEN` bytes. The reason is
+    /// emitted in `VaspUpdated` for the audit trail.
+    pub fn set_vasp_status(
+        env: Env,
+        address: Address,
+        status: VaspStatus,
+        reason: String,
+    ) -> Result<(), Error> {
         require_admin(&env)?;
+        if reason.len() > MAX_REASON_LEN {
+            return Err(Error::ReasonTooLong);
+        }
+        if status != VaspStatus::Active && reason.is_empty() {
+            return Err(Error::ReasonRequired);
+        }
         let mut v = load_vasp(&env, &address)?;
+        // Revocation is final: a revoked VASP can never be re-admitted or
+        // suspended through this function. Re-setting `Revoked` is a no-op.
+        if v.status == VaspStatus::Revoked && status != VaspStatus::Revoked {
+            return Err(Error::VaspRevoked);
+        }
         v.status = status;
         save_vasp(&env, &v);
         VaspUpdated {
             address,
             status,
             expires_at: v.expires_at,
+            reason,
         }
         .publish(&env);
         Ok(())
@@ -402,6 +480,7 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        require_future_expiry(&env, expires_at)?;
         let mut v = load_vasp(&env, &address)?;
         v.expires_at = expires_at;
         save_vasp(&env, &v);
@@ -409,6 +488,7 @@ impl ComplyRail {
             address,
             status: v.status,
             expires_at,
+            reason: String::from_str(&env, ""),
         }
         .publish(&env);
         Ok(())
@@ -448,7 +528,7 @@ impl ComplyRail {
         jurisdiction: String,
         amount: i128,
     ) -> Result<(), Error> {
-        require_admin(&env)?;
+        require_threshold_admin(&env)?;
         if amount < 0 {
             return Err(Error::InvalidThreshold);
         }
@@ -459,6 +539,23 @@ impl ComplyRail {
             asset,
             jurisdiction,
             amount,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Removes a per-jurisdiction threshold. Afterwards that jurisdiction falls
+    /// back to `"*"`, or to 0 (every payment held) if there is no fallback.
+    pub fn remove_threshold(env: Env, asset: Address, jurisdiction: String) -> Result<(), Error> {
+        require_threshold_admin(&env)?;
+        let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::ThresholdNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        ThresholdRemoved {
+            asset,
+            jurisdiction,
         }
         .publish(&env);
         Ok(())

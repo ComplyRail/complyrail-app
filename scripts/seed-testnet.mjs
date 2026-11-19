@@ -25,6 +25,15 @@ const admin = Keypair.fromSecret(secret.trim())
 if (deployment.admin && admin.publicKey() !== deployment.admin) {
   throw new Error(`TESTNET_ADMIN_SECRET belongs to ${admin.publicKey()}, but the contract admin is ${deployment.admin}`)
 }
+const thresholdSecret = process.env.TESTNET_THRESHOLD_ADMIN_SECRET
+if (!thresholdSecret) throw new Error('Set TESTNET_THRESHOLD_ADMIN_SECRET (the threshold admin secret key, S...)')
+const thresholdAdmin = Keypair.fromSecret(thresholdSecret.trim())
+if (thresholdAdmin.publicKey() === admin.publicKey()) {
+  throw new Error('The threshold admin must be a different key from the admin')
+}
+if (deployment.thresholdAdmin && thresholdAdmin.publicKey() !== deployment.thresholdAdmin) {
+  throw new Error(`TESTNET_THRESHOLD_ADMIN_SECRET belongs to ${thresholdAdmin.publicKey()}, but the threshold admin is ${deployment.thresholdAdmin}`)
+}
 
 const xlmSac = Asset.native().contractId(PASSPHRASE)
 const explorer = 'https://stellar.expert/explorer/testnet'
@@ -88,7 +97,7 @@ async function main() {
   const vaspB = Keypair.random()
   const beneficiary = Keypair.random()
 
-  await Promise.all([admin, vaspA, vaspB, beneficiary].map((k) => fund(k.publicKey())))
+  await Promise.all([admin, thresholdAdmin, vaspA, vaspB, beneficiary].map((k) => fund(k.publicKey())))
   say(`✓ Funded demo accounts with Friendbot`)
 
   await call(admin, 'register_vasp', {
@@ -100,8 +109,8 @@ async function main() {
     public_key: randomBytes(32), expires_at: undefined,
   }, `Registered Demo VASP B (GB) ${vaspB.publicKey()}`)
 
-  await call(admin, 'set_threshold', { asset: xlmSac, jurisdiction: 'NG', amount: 50n * XLM }, 'Threshold XLM / NG = 50')
-  await call(admin, 'set_threshold', { asset: xlmSac, jurisdiction: '*', amount: 100n * XLM }, 'Threshold XLM / * (fallback) = 100')
+  await call(thresholdAdmin, 'set_threshold', { asset: xlmSac, jurisdiction: 'NG', amount: 50n * XLM }, 'Threshold XLM / NG = 50')
+  await call(thresholdAdmin, 'set_threshold', { asset: xlmSac, jurisdiction: '*', amount: 100n * XLM }, 'Threshold XLM / * (fallback) = 100')
 
   const pay = (from, to, amount, label) =>
     call(from, 'submit_payment', {

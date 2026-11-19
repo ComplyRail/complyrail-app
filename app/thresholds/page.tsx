@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useRole, useThresholds } from '@/lib/hooks'
+import { useThresholdAdmin, useThresholds } from '@/lib/hooks'
 import { TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { ASSETS, JURISDICTIONS, assetSymbol } from '@/lib/config'
@@ -11,12 +11,12 @@ import { setThreshold } from '@/lib/contract'
 export default function ThresholdsPage() {
   const { thresholds, loading, error, reload } = useThresholds()
   const { address } = useWallet()
-  const { role } = useRole(address)
+  const { isThresholdAdmin } = useThresholdAdmin(address)
   const tx = useTx()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ asset: '', jurisdiction: '', amount: '' })
   const [amountError, setAmountError] = useState<string | null>(null)
-  const isAdmin = role === 'admin'
+  const isAdmin = isThresholdAdmin
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
