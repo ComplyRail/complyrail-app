@@ -378,3 +378,91 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- per-VASP payment index ----------------------------------------------
+
+fn submit_small(t: &Setup, from: &Address, to: &Address) -> u64 {
+    // 10 is below the 3_000 US threshold, so these settle immediately.
+    t.client
+        .submit_payment(from, to, &t.beneficiary, &t.token.address, &10)
+}
+
+#[test]
+fn vasp_index_lists_both_sides_in_submission_order() {
+    let t = setup();
+    let p0 = submit_small(&t, &t.vasp_a, &t.vasp_b);
+    let p1 = submit_small(&t, &t.vasp_a, &t.vasp_b);
+    let p2 = submit_small(&t, &t.vasp_a, &t.vasp_b);
+
+    let expected = soroban_sdk::vec![&t.env, p0, p1, p2];
+    assert_eq!(t.client.payments_for_vasp(&t.vasp_a, &0, &10), expected);
+    assert_eq!(t.client.payments_for_vasp(&t.vasp_b, &0, &10), expected);
+}
+
+#[test]
+fn vasp_index_is_empty_for_unrelated_vasp() {
+    let t = setup();
+    submit_small(&t, &t.vasp_a, &t.vasp_b);
+    let stranger = Address::generate(&t.env);
+    assert_eq!(
+        t.client.payments_for_vasp(&stranger, &0, &10),
+        soroban_sdk::vec![&t.env]
+    );
+}
+
+#[test]
+fn vasp_index_paging_respects_start_and_limit() {
+    let t = setup();
+    let mut ids = Vec::new(&t.env);
+    for _ in 0..5 {
+        ids.push_back(submit_small(&t, &t.vasp_a, &t.vasp_b));
+    }
+    let all = ids.clone();
+
+    assert_eq!(
+        t.client.payments_for_vasp(&t.vasp_a, &1, &2),
+        soroban_sdk::vec![&t.env, ids.get(1).unwrap(), ids.get(2).unwrap()]
+    );
+    // Last page is shorter than the limit.
+    assert_eq!(
+        t.client.payments_for_vasp(&t.vasp_a, &4, &10),
+        soroban_sdk::vec![&t.env, ids.get(4).unwrap()]
+    );
+    // Start past the end and zero limit both give an empty page.
+    assert_eq!(
+        t.client.payments_for_vasp(&t.vasp_a, &5, &10),
+        soroban_sdk::vec![&t.env]
+    );
+    assert_eq!(
+        t.client.payments_for_vasp(&t.vasp_a, &0, &0),
+        soroban_sdk::vec![&t.env]
+    );
+    // Paging through everything reproduces the full list.
+    let mut paged = Vec::new(&t.env);
+    let mut start = 0;
+    loop {
+        let page = t.client.payments_for_vasp(&t.vasp_a, &start, &2);
+        if page.is_empty() {
+            break;
+        }
+        for id in page.iter() {
+            paged.push_back(id);
+        }
+        start += 2;
+    }
+    assert_eq!(paged, all);
+}
+
+#[test]
+fn vasp_index_page_size_is_capped() {
+    let t = setup();
+    for _ in 0..(MAX_PAGE_SIZE + 5) {
+        submit_small(&t, &t.vasp_a, &t.vasp_b);
+    }
+    let page = t.client.payments_for_vasp(&t.vasp_a, &0, &u32::MAX);
+    assert_eq!(page.len(), MAX_PAGE_SIZE);
+    let tail = t
+        .client
+        .payments_for_vasp(&t.vasp_a, &MAX_PAGE_SIZE, &u32::MAX);
+    assert_eq!(tail.len(), 5);
+}

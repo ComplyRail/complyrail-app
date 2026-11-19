@@ -32,6 +32,9 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Upper bound on the number of ids a single `payments_for_vasp` call returns.
+pub const MAX_PAGE_SIZE: u32 = 100;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -120,6 +123,9 @@ enum DataKey {
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
+    /// Ids of every payment this VASP originated or is the recipient of, in
+    /// submission order.
+    VaspPayments(Address),
 }
 
 #[contract]
@@ -226,6 +232,18 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .persistent()
         .get::<_, i128>(&wildcard)
         .unwrap_or(0)
+}
+
+fn index_vasp_payment(env: &Env, vasp: &Address, payment_id: u64) {
+    let key = DataKey::VaspPayments(vasp.clone());
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(payment_id);
+    env.storage().persistent().set(&key, &ids);
+    bump_persistent(env, &key);
 }
 
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
@@ -522,6 +540,9 @@ impl ComplyRail {
             resolved_at: None,
         };
 
+        index_vasp_payment(&env, &from_vasp, id);
+        index_vasp_payment(&env, &to_vasp, id);
+
         PaymentSubmitted {
             id,
             from_vasp,
@@ -634,6 +655,27 @@ impl ComplyRail {
 
     pub fn get_payment(env: Env, payment_id: u64) -> Result<Payment, Error> {
         load_payment(&env, payment_id)
+    }
+
+    /// Payment ids in which `vasp` is either originator or beneficiary, in
+    /// submission order. Returns at most `min(limit, MAX_PAGE_SIZE)` ids
+    /// starting at offset `start`; an out-of-range `start` yields an empty Vec.
+    pub fn payments_for_vasp(env: Env, vasp: Address, start: u32, limit: u32) -> Vec<u64> {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaspPayments(vasp))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut page = Vec::new(&env);
+        let end = start
+            .saturating_add(limit.min(MAX_PAGE_SIZE))
+            .min(ids.len());
+        let mut i = start;
+        while i < end {
+            page.push_back(ids.get(i).unwrap());
+            i += 1;
+        }
+        page
     }
 
     /// Number of payments ever submitted (ids are `0..payment_count`).
