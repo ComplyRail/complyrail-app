@@ -301,6 +301,8 @@ pub struct PaymentSubmitted {
     pub id: u64,
     pub from_vasp: Address,
     pub to_vasp: Address,
+    pub beneficiary: Address,
+    pub asset: Address,
     pub amount: i128,
     pub requires_attestation: bool,
 }
@@ -319,6 +321,7 @@ pub struct AttestationSubmitted {
 pub struct PaymentReleased {
     #[topic]
     pub id: u64,
+    pub asset: Address,
     pub amount: i128,
 }
 
@@ -327,6 +330,7 @@ pub struct PaymentReleased {
 pub struct PaymentRejected {
     #[topic]
     pub id: u64,
+    pub asset: Address,
     pub reason: String,
 }
 
@@ -335,6 +339,7 @@ pub struct PaymentRejected {
 pub struct PaymentCancelled {
     #[topic]
     pub id: u64,
+    pub asset: Address,
     pub amount: i128,
 }
 
@@ -565,6 +570,8 @@ impl ComplyRail {
             id,
             from_vasp,
             to_vasp,
+            beneficiary: p.beneficiary.clone(),
+            asset: p.asset.clone(),
             amount,
             requires_attestation,
         }
@@ -574,7 +581,12 @@ impl ComplyRail {
             save_payment(&env, &p);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released)?;
-            PaymentReleased { id, amount }.publish(&env);
+            PaymentReleased {
+                id,
+                asset: p.asset.clone(),
+                amount,
+            }
+            .publish(&env);
         }
         Ok(id)
     }
@@ -622,6 +634,7 @@ impl ComplyRail {
         settle(&env, &mut p, &to, PaymentStatus::Released)?;
         PaymentReleased {
             id: payment_id,
+            asset: p.asset.clone(),
             amount: p.amount,
         }
         .publish(&env);
@@ -646,6 +659,7 @@ impl ComplyRail {
         settle(&env, &mut p, &to, PaymentStatus::Rejected)?;
         PaymentRejected {
             id: payment_id,
+            asset: p.asset.clone(),
             reason,
         }
         .publish(&env);
@@ -665,6 +679,7 @@ impl ComplyRail {
         settle(&env, &mut p, &to, PaymentStatus::Reclaimed)?;
         PaymentRejected {
             id: payment_id,
+            asset: p.asset.clone(),
             reason: String::from_str(&env, "expired"),
         }
         .publish(&env);
@@ -686,6 +701,7 @@ impl ComplyRail {
         settle(&env, &mut p, &to, PaymentStatus::Cancelled)?;
         PaymentCancelled {
             id: payment_id,
+            asset: p.asset.clone(),
             amount,
         }
         .publish(&env);

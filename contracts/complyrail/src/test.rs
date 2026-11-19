@@ -4,10 +4,11 @@ use super::*;
 use soroban_sdk::{
     contract, contractimpl,
     symbol_short,
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, String, Val,
 };
+use soroban_sdk::Event;
 
 struct Setup<'a> {
     env: Env,
@@ -541,4 +542,166 @@ fn release_to_recipient_without_trustline_keeps_payment_pending() {
     assert_eq!(r, Err(Ok(Error::TransferFailed)));
     assert_eq!(client.get_payment(&id).status, PaymentStatus::Pending);
     assert_eq!(client.get_payment(&id).resolved_at, None);
+}
+
+// ----- events --------------------------------------------------------------
+// `env.events().all()` reports only the most recent invocation, so each test
+// asserts right after the call that emits the events.
+
+/// The `(contract, topics, data)` tuple the host records for an event.
+fn ev<E: Event>(t: &Setup, e: &E) -> (Address, Vec<Val>, Val) {
+    (t.client.address.clone(), e.topics(&t.env), e.data(&t.env))
+}
+
+fn events_of(t: &Setup) -> soroban_sdk::testutils::ContractEvents {
+    t.env.events().all().filter_by_contract(&t.client.address)
+}
+
+fn submitted(t: &Setup, id: u64, amount: i128, requires_attestation: bool) -> PaymentSubmitted {
+    PaymentSubmitted {
+        id,
+        from_vasp: t.vasp_a.clone(),
+        to_vasp: t.vasp_b.clone(),
+        beneficiary: t.beneficiary.clone(),
+        asset: t.token.address.clone(),
+        amount,
+        requires_attestation,
+    }
+}
+
+#[test]
+fn submit_below_threshold_events_are_self_describing() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &2_999,
+    );
+    let mut expected = Vec::new(&t.env);
+    expected.push_back(ev(&t, &submitted(&t, id, 2_999, false)));
+    expected.push_back(ev(
+        &t,
+        &PaymentReleased {
+            id,
+            asset: t.token.address.clone(),
+            amount: 2_999,
+        },
+    ));
+    assert_eq!(events_of(&t), expected);
+}
+
+#[test]
+fn submit_above_threshold_event_carries_asset_and_beneficiary() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let mut expected = Vec::new(&t.env);
+    expected.push_back(ev(&t, &submitted(&t, id, 5_000, true)));
+    assert_eq!(events_of(&t), expected);
+}
+
+#[test]
+fn release_event_carries_asset() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.vasp_b);
+
+    let mut expected = Vec::new(&t.env);
+    expected.push_back(ev(
+        &t,
+        &PaymentReleased {
+            id,
+            asset: t.token.address.clone(),
+            amount: 5_000,
+        },
+    ));
+    assert_eq!(events_of(&t), expected);
+}
+
+#[test]
+fn reject_event_carries_asset() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client.reject_payment(&id, &t.vasp_b, &s(&t.env, "bad data"));
+
+    let mut expected = Vec::new(&t.env);
+    expected.push_back(ev(
+        &t,
+        &PaymentRejected {
+            id,
+            asset: t.token.address.clone(),
+            reason: s(&t.env, "bad data"),
+        },
+    ));
+    assert_eq!(events_of(&t), expected);
+}
+
+#[test]
+fn reclaim_event_carries_asset() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+
+    let mut expected = Vec::new(&t.env);
+    expected.push_back(ev(
+        &t,
+        &PaymentRejected {
+            id,
+            asset: t.token.address.clone(),
+            reason: s(&t.env, "expired"),
+        },
+    ));
+    assert_eq!(events_of(&t), expected);
+}
+
+#[test]
+fn cancel_event_carries_asset_and_amount() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client.cancel_payment(&id);
+
+    let mut expected = Vec::new(&t.env);
+    expected.push_back(ev(
+        &t,
+        &PaymentCancelled {
+            id,
+            asset: t.token.address.clone(),
+            amount: 5_000,
+        },
+    ));
+    assert_eq!(events_of(&t), expected);
 }
