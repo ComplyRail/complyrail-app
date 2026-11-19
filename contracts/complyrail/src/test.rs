@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, Event, String,
 };
 
 struct Setup<'a> {
@@ -377,4 +377,103 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- audit: actor on release / reject events -----------------------------
+
+// `events().all()` only reports the most recent invocation, so each assertion
+// runs straight after the call it checks.
+fn emitted_by(t: &Setup, event: &impl Event) -> bool {
+    let xdr = event.to_xdr(&t.env, &t.client.address);
+    t.env
+        .events()
+        .all()
+        .filter_by_contract(&t.client.address)
+        .events()
+        .contains(&xdr)
+}
+
+#[test]
+fn admin_override_release_is_distinguishable_from_beneficiary_release() {
+    let t = setup();
+    let a = &t.token.address;
+    let by_admin = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    let by_beneficiary = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    for id in [by_admin, by_beneficiary] {
+        t.client
+            .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    }
+
+    t.client.release_payment(&by_admin, &t.admin);
+    assert!(emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_admin,
+            amount: 5_000,
+            by: t.admin.clone()
+        }
+    ));
+    assert!(!emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_admin,
+            amount: 5_000,
+            by: t.vasp_b.clone()
+        }
+    ));
+
+    t.client.release_payment(&by_beneficiary, &t.vasp_b);
+    assert!(emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_beneficiary,
+            amount: 5_000,
+            by: t.vasp_b.clone()
+        }
+    ));
+    assert!(!emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_beneficiary,
+            amount: 5_000,
+            by: t.admin.clone()
+        }
+    ));
+}
+
+#[test]
+fn reject_and_reclaim_events_record_actor() {
+    let t = setup();
+    let a = &t.token.address;
+    let rejected = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    t.client
+        .reject_payment(&rejected, &t.admin, &s(&t.env, "sanctions hit"));
+    assert!(emitted_by(
+        &t,
+        &PaymentRejected {
+            id: rejected,
+            reason: s(&t.env, "sanctions hit"),
+            by: t.admin.clone(),
+        }
+    ));
+
+    let reclaimed = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&reclaimed);
+    assert!(emitted_by(
+        &t,
+        &PaymentRejected {
+            id: reclaimed,
+            reason: s(&t.env, "expired"),
+            by: t.vasp_a.clone(),
+        }
+    ));
 }

@@ -291,6 +291,9 @@ pub struct PaymentReleased {
     #[topic]
     pub id: u64,
     pub amount: i128,
+    /// Address that performed the release: the beneficiary VASP, the admin
+    /// override, or the originator for below-threshold auto-settlement.
+    pub by: Address,
 }
 
 #[contractevent(topics = ["pay_rej"])]
@@ -299,6 +302,9 @@ pub struct PaymentRejected {
     #[topic]
     pub id: u64,
     pub reason: String,
+    /// Address that performed the rejection (or the originator for an expiry
+    /// reclaim).
+    pub by: Address,
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +541,12 @@ impl ComplyRail {
             save_payment(&env, &p);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released);
-            PaymentReleased { id, amount }.publish(&env);
+            PaymentReleased {
+                id,
+                amount,
+                by: p.from_vasp.clone(),
+            }
+            .publish(&env);
         }
         Ok(id)
     }
@@ -584,6 +595,7 @@ impl ComplyRail {
         PaymentReleased {
             id: payment_id,
             amount: p.amount,
+            by: caller,
         }
         .publish(&env);
         Ok(())
@@ -608,6 +620,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason,
+            by: caller,
         }
         .publish(&env);
         Ok(())
@@ -627,6 +640,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
+            by: p.from_vasp.clone(),
         }
         .publish(&env);
         Ok(())
