@@ -427,3 +427,101 @@ fn release_settles_after_beneficiary_vasp_expires() {
     assert_eq!(t.token.balance(&t.beneficiary), 5_000);
     assert_eq!(t.token.balance(&t.client.address), 0);
 }
+
+// ----- races around payment expiry (#63) -----------------------------------
+
+#[test]
+fn release_then_reclaim_at_expiry_leaves_one_terminal_state() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+
+    t.client.release_payment(&id, &t.vasp_b);
+    // Reclaim at the same ledger time must not run after the release.
+    assert_eq!(
+        t.client.try_reclaim_expired(&id),
+        Err(Ok(Error::PaymentNotPending))
+    );
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000 - 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn reclaim_then_release_at_expiry_leaves_one_terminal_state() {
+    let t = setup();
+    let id = submit_held(&t);
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+
+    t.client.reclaim_expired(&id);
+    // Release at the same ledger time must not run after the reclaim.
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn attest_at_expiry_is_recorded_but_payment_stays_pending() {
+    let t = setup();
+    let id = submit_held(&t);
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+
+    // Current behaviour: attestation is not gated on expiry.
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Pending);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 7)));
+    assert_eq!(p.attested_at, Some(expires_at));
+    assert_eq!(t.token.balance(&t.client.address), 5_000);
+}
+
+#[test]
+fn attest_then_expire_reclaims_and_blocks_release() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+    t.client.reclaim_expired(&id);
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn attest_after_reclaim_is_rejected() {
+    let t = setup();
+    let id = submit_held(&t);
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+    t.client.reclaim_expired(&id);
+
+    assert_eq!(
+        t.client
+            .try_submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023")),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(t.client.get_payment(&id).attestation_hash, None);
+}
