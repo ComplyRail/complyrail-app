@@ -119,7 +119,8 @@ export function mapEvent(e: {
   data: unknown
 }): AuditEvent | null {
   const type = e.topics[0] as AuditEventType
-  if (!(type in EVENT_LABELS)) return null
+  // Own-property check only: `in` would also match inherited keys such as `toString`.
+  if (!Object.prototype.hasOwnProperty.call(EVENT_LABELS, type)) return null
   const details: Record<string, string> = {}
   if (e.data && typeof e.data === 'object' && !(e.data instanceof Uint8Array)) {
     for (const [k, v] of Object.entries(e.data as Record<string, unknown>)) details[k] = stringify(v)
