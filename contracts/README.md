@@ -30,7 +30,7 @@ originator VASP                     contract                      beneficiary VA
 | `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days |
 | `transfer_admin(new_admin)` | admin + new admin | |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
-| `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
+| `set_vasp_status(address, status, reason)` | admin | `Active` / `Suspended` / `Revoked`. Suspend and revoke need a non-empty `reason` (max 256 bytes). `Revoked` is final. |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
 | `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |

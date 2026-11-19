@@ -142,7 +142,8 @@ fn unknown_vasp_is_not_active() {
 #[test]
 fn suspend_vasp_blocks_payments() {
     let t = setup();
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason"));
     assert!(!t.client.is_vasp_active(&t.vasp_b));
     let r =
         t.client
@@ -153,22 +154,26 @@ fn suspend_vasp_blocks_payments() {
 #[test]
 fn suspended_vasp_can_be_reactivated() {
     let t = setup();
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Active);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason"));
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Active, &s(&t.env, "test reason"));
     assert!(t.client.is_vasp_active(&t.vasp_b));
 }
 
 #[test]
 fn revoked_vasp_cannot_be_reactivated_or_suspended() {
     let t = setup();
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "test reason"));
     assert_eq!(
-        t.client.try_set_vasp_status(&t.vasp_b, &VaspStatus::Active),
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Active, &s(&t.env, "test reason")),
         Err(Ok(Error::VaspRevoked))
     );
     assert_eq!(
         t.client
-            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Suspended),
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason")),
         Err(Ok(Error::VaspRevoked))
     );
     // the failed attempts left the status untouched
@@ -177,10 +182,58 @@ fn revoked_vasp_cannot_be_reactivated_or_suspended() {
 }
 
 #[test]
+fn suspend_and_revoke_require_a_reason() {
+    let t = setup();
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "")),
+        Err(Ok(Error::ReasonRequired))
+    );
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "")),
+        Err(Ok(Error::ReasonRequired))
+    );
+    // a failed attempt does not change the status
+    assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Active);
+}
+
+#[test]
+fn reactivation_does_not_require_a_reason() {
+    let t = setup();
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "review"));
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Active, &s(&t.env, ""));
+    assert!(t.client.is_vasp_active(&t.vasp_b));
+}
+
+#[test]
+fn reason_length_is_bounded() {
+    let t = setup();
+    let at_limit = String::from_bytes(&t.env, &[b'a'; MAX_REASON_LEN as usize]);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &at_limit);
+    let too_long = String::from_bytes(&t.env, &[b'a'; MAX_REASON_LEN as usize + 1]);
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &too_long),
+        Err(Ok(Error::ReasonTooLong))
+    );
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Active, &too_long),
+        Err(Ok(Error::ReasonTooLong))
+    );
+}
+
+#[test]
 fn revoking_again_is_allowed() {
     let t = setup();
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Revoked);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "test reason"));
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "test reason"));
     assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Revoked);
 }
 

@@ -57,7 +57,14 @@ pub enum Error {
     InvalidThreshold = 14,
     /// A revoked VASP is terminal and cannot change status again.
     VaspRevoked = 15,
+    /// Suspending or revoking a VASP requires a non-empty reason.
+    ReasonRequired = 16,
+    /// Reason exceeds `MAX_REASON_LEN` bytes.
+    ReasonTooLong = 17,
 }
+
+/// Upper bound on the reason attached to a status change, in bytes.
+pub const MAX_REASON_LEN: u32 = 256;
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,6 +263,8 @@ pub struct VaspUpdated {
     pub address: Address,
     pub status: VaspStatus,
     pub expires_at: Option<u64>,
+    /// Why the status changed. Empty for expiry-only updates.
+    pub reason: String,
 }
 
 #[contractevent(topics = ["thr_set"])]
@@ -384,8 +393,22 @@ impl ComplyRail {
         Ok(())
     }
 
-    pub fn set_vasp_status(env: Env, address: Address, status: VaspStatus) -> Result<(), Error> {
+    /// Sets a VASP's status. Suspending or revoking requires a non-empty
+    /// `reason`; any reason is capped at `MAX_REASON_LEN` bytes. The reason is
+    /// emitted in `VaspUpdated` for the audit trail.
+    pub fn set_vasp_status(
+        env: Env,
+        address: Address,
+        status: VaspStatus,
+        reason: String,
+    ) -> Result<(), Error> {
         require_admin(&env)?;
+        if reason.len() > MAX_REASON_LEN {
+            return Err(Error::ReasonTooLong);
+        }
+        if status != VaspStatus::Active && reason.is_empty() {
+            return Err(Error::ReasonRequired);
+        }
         let mut v = load_vasp(&env, &address)?;
         // Revocation is final: a revoked VASP can never be re-admitted or
         // suspended through this function. Re-setting `Revoked` is a no-op.
@@ -398,6 +421,7 @@ impl ComplyRail {
             address,
             status,
             expires_at: v.expires_at,
+            reason,
         }
         .publish(&env);
         Ok(())
@@ -416,6 +440,7 @@ impl ComplyRail {
             address,
             status: v.status,
             expires_at,
+            reason: String::from_str(&env, ""),
         }
         .publish(&env);
         Ok(())

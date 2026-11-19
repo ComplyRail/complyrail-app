@@ -20,6 +20,7 @@ export default function VaspsPage() {
   const tx = useTx()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(emptyForm)
+  const [statusReason, setStatusReason] = useState('')
   const isAdmin = role === 'admin'
 
   const formError =
@@ -44,8 +45,15 @@ export default function VaspsPage() {
   }
 
   const changeStatus = async (vaspAddress: string, status: VaspStatus) => {
-    const ok = await tx.run(`Status set to ${status}`, s => setVaspStatus(s, vaspAddress, status).then(() => true))
-    if (ok) reload()
+    const trimmed = statusReason.trim()
+    if (status !== VaspStatus.Active && !trimmed) return
+    const ok = await tx.run(`Status set to ${status}`, s =>
+      setVaspStatus(s, vaspAddress, status, trimmed).then(() => true),
+    )
+    if (ok) {
+      setStatusReason('')
+      reload()
+    }
   }
 
   return (
@@ -94,6 +102,18 @@ export default function VaspsPage() {
               {tx.pending ? 'Submitting…' : 'Register on-chain'}
             </button>
           </form>
+        )}
+
+        {isAdmin && (
+          <div className="mb-4">
+            <input
+              value={statusReason}
+              maxLength={256}
+              onChange={e => setStatusReason(e.target.value)}
+              placeholder="Reason (required to suspend or revoke)"
+              className="w-full px-3 py-2 border border-border rounded bg-background"
+            />
+          </div>
         )}
 
         <div className="mb-4"><TxStatus {...tx} /></div>

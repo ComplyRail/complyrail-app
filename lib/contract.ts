@@ -280,8 +280,8 @@ export function registerVasp(
   })
 }
 
-export function setVaspStatus(signer: Signer, address: string, status: VaspStatus) {
-  return write<void>(signer, 'set_vasp_status', { address, status: vaspStatusArg(status) })
+export function setVaspStatus(signer: Signer, address: string, status: VaspStatus, reason: string) {
+  return write<void>(signer, 'set_vasp_status', { address, status: vaspStatusArg(status), reason })
 }
 
 export function setVaspExpiry(signer: Signer, address: string, expiresAt?: number) {
