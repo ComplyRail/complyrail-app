@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useRole, useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
@@ -8,7 +8,8 @@ import { useWallet } from '@/components/WalletProvider'
 import { formatAddress } from '@/lib/format'
 import { JURISDICTIONS } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
-import { registerVasp, setVaspStatus } from '@/lib/contract'
+import { registerVasp, setVaspExpiry, setVaspStatus } from '@/lib/contract'
+import { expiryFromDays, expiryState } from '@/lib/vasp-expiry'
 import { VaspStatus } from '@/lib/types'
 
 const emptyForm = { address: '', name: '', jurisdiction: '', publicKeyHex: '', expiresDays: '' }
@@ -20,6 +21,7 @@ export default function VaspsPage() {
   const tx = useTx()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(emptyForm)
+  const [renewing, setRenewing] = useState<{ address: string; days: string } | null>(null)
   const isAdmin = role === 'admin'
 
   const formError =
@@ -46,6 +48,21 @@ export default function VaspsPage() {
   const changeStatus = async (vaspAddress: string, status: VaspStatus) => {
     const ok = await tx.run(`Status set to ${status}`, s => setVaspStatus(s, vaspAddress, status).then(() => true))
     if (ok) reload()
+  }
+
+  const renewExpiry = async (vaspAddress: string, expiresAt: number | undefined, label: string) => {
+    const ok = await tx.run(label, s => setVaspExpiry(s, vaspAddress, expiresAt).then(() => true))
+    if (ok) {
+      setRenewing(null)
+      reload()
+    }
+  }
+
+  const submitRenew = (vaspAddress: string) => {
+    if (!renewing) return
+    const expiresAt = expiryFromDays(renewing.days, Date.now() / 1000)
+    if (expiresAt === null) return
+    renewExpiry(vaspAddress, expiresAt, `Expiry set to ${renewing.days} days from now`)
   }
 
   return (
@@ -122,11 +139,13 @@ export default function VaspsPage() {
                 </thead>
                 <tbody>
                   {vasps.map(vasp => {
-                    const now = Date.now() / 1000
-                    const isExpired = !!vasp.expiresAt && now >= vasp.expiresAt
-                    const daysLeft = vasp.expiresAt ? Math.ceil((vasp.expiresAt - now) / 86400) : null
+                    const expiry = expiryState(vasp.expiresAt, Date.now() / 1000)
+                    const isExpired = expiry.kind === 'expired'
+                    const rowTint = isExpired ? 'bg-red-50' : expiry.kind === 'expiring-soon' ? 'bg-amber-50' : ''
+                    const isRenewing = renewing?.address === vasp.address
                     return (
-                      <tr key={vasp.address} className={`border-b border-border hover:bg-muted/50 ${isExpired ? 'bg-red-50' : ''}`}>
+                      <Fragment key={vasp.address}>
+                      <tr className={`border-b border-border hover:bg-muted/50 ${rowTint}`}>
                         <td className="px-6 py-4 font-medium">{vasp.name}</td>
                         <td className="px-6 py-4 font-mono text-sm">
                           <ExplorerLink kind="account" id={vasp.address}>{formatAddress(vasp.address)}</ExplorerLink>
@@ -134,13 +153,12 @@ export default function VaspsPage() {
                         <td className="px-6 py-4">{vasp.jurisdiction}</td>
                         <td className="px-6 py-4"><StatusBadge status={vasp.status} type="vasp" /></td>
                         <td className="px-6 py-4 text-sm">
-                          {vasp.expiresAt ? (
-                            <span className={isExpired ? 'text-red-600 font-semibold' : 'text-muted-foreground'}>
-                              {isExpired ? 'Expired' : `${daysLeft}d remaining`}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">No expiry</span>
+                          {expiry.kind === 'none' && <span className="text-muted-foreground">No expiry</span>}
+                          {expiry.kind === 'expired' && <span className="text-red-600 font-semibold">Expired</span>}
+                          {expiry.kind === 'expiring-soon' && (
+                            <span className="text-amber-700 font-semibold">Expires soon · {expiry.daysLeft}d remaining</span>
                           )}
+                          {expiry.kind === 'active' && <span className="text-muted-foreground">{expiry.daysLeft}d remaining</span>}
                         </td>
                         {isAdmin && (
                           <td className="px-6 py-4 text-sm space-x-2 whitespace-nowrap">
@@ -156,9 +174,36 @@ export default function VaspsPage() {
                               <button disabled={tx.pending} onClick={() => changeStatus(vasp.address, VaspStatus.Revoked)}
                                 className="px-3 py-1 bg-red-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Revoke</button>
                             )}
+                            <button disabled={tx.pending}
+                              onClick={() => setRenewing(isRenewing ? null : { address: vasp.address, days: '' })}
+                              className="px-3 py-1 bg-muted rounded text-xs hover:opacity-90 disabled:opacity-50">Renew</button>
                           </td>
                         )}
                       </tr>
+                      {isAdmin && isRenewing && (
+                        <tr className="border-b border-border bg-muted/30">
+                          <td colSpan={6} className="px-6 py-4">
+                            <div className="flex flex-wrap items-center gap-2 text-sm">
+                              <label htmlFor={`renew-${vasp.address}`}>Valid for</label>
+                              <input id={`renew-${vasp.address}`} type="number" min="1" inputMode="numeric"
+                                placeholder="days from now" value={renewing.days}
+                                onChange={e => setRenewing({ address: vasp.address, days: e.target.value })}
+                                className="w-40 px-3 py-1 border border-border rounded bg-background" />
+                              <button disabled={tx.pending || expiryFromDays(renewing.days, Date.now() / 1000) === null}
+                                onClick={() => submitRenew(vasp.address)}
+                                className="px-3 py-1 bg-primary text-primary-foreground rounded text-xs hover:opacity-90 disabled:opacity-50">
+                                Set expiry
+                              </button>
+                              <button disabled={tx.pending || !vasp.expiresAt}
+                                onClick={() => renewExpiry(vasp.address, undefined, 'Expiry removed')}
+                                className="px-3 py-1 bg-muted rounded text-xs hover:opacity-90 disabled:opacity-50">
+                                Remove expiry
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     )
                   })}
                 </tbody>
