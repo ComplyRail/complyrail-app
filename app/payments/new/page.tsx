@@ -51,7 +51,13 @@ export default function NewPaymentPage() {
           </p>
         </div>
 
-        {address && role !== 'vasp' && (
+        {address && role === 'inactive-vasp' && (
+          <div className="mb-6 p-4 rounded border border-yellow-300 bg-yellow-50 text-sm text-yellow-900">
+            The connected wallet is a registered VASP but is suspended, revoked or expired, so the contract will reject
+            this payment. Ask the admin to reactivate it on the VASP page.
+          </div>
+        )}
+        {address && role !== 'vasp' && role !== 'inactive-vasp' && (
           <div className="mb-6 p-4 rounded border border-yellow-300 bg-yellow-50 text-sm text-yellow-900">
             The connected wallet is not a registered VASP, so the contract will reject this payment. Ask the admin to
             register it on the VASP page first.

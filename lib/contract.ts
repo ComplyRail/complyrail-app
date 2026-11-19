@@ -1,6 +1,7 @@
 import { contract, rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { ASSETS, JURISDICTIONS, config, isContractConfigured } from './config'
 import { bytesToHex, fromUnits, hexToBytes } from './format'
+import { withRetry } from './retry'
 import {
   AuditEvent,
   AuditEventType,
@@ -173,10 +174,13 @@ async function getClient(signer?: Signer): Promise<AnyClient> {
   return clients.get(key)!
 }
 
+/** Reads are idempotent, so transient RPC failures are retried. Writes are never retried. */
 async function read<T>(method: string, args?: Record<string, unknown>): Promise<T> {
-  const c = await getClient()
-  const tx = await c[method](args)
-  return unwrap<T>(tx.result)
+  return withRetry(async () => {
+    const c = await getClient()
+    const tx = await c[method](args)
+    return unwrap<T>(tx.result)
+  })
 }
 
 async function write<T>(signer: Signer, method: string, args: Record<string, unknown>): Promise<T> {
@@ -192,6 +196,11 @@ async function write<T>(signer: Signer, method: string, args: Record<string, unk
 
 export async function getAdmin(): Promise<string> {
   return read<string>('admin')
+}
+
+/** On-chain check: registered, `Active` and not expired (contract `is_vasp_active`). */
+export async function isVaspActive(address: string): Promise<boolean> {
+  return read<boolean>('is_vasp_active', { address })
 }
 
 export async function listVasps(): Promise<VaspEntry[]> {
