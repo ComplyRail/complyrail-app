@@ -395,6 +395,39 @@ export function buildIvmsPayload(p: {
   }
 }
 
+/**
+ * Canonical JSON per RFC 8785 (JSON Canonicalization Scheme): no whitespace,
+ * object keys sorted by UTF-16 code units, and numbers in ES Number format.
+ * Two implementations that agree on the object produce the same bytes, so
+ * the hash does not depend on key order or formatting. Throws on values JSON
+ * cannot represent (NaN, Infinity, bigint, functions, symbols).
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null) return 'null'
+  switch (typeof value) {
+    case 'boolean':
+      return value ? 'true' : 'false'
+    case 'number':
+      if (!Number.isFinite(value)) throw new TypeError('canonical JSON cannot encode a non-finite number')
+      // JSON.stringify uses the ES Number::toString form that RFC 8785 requires.
+      return JSON.stringify(value)
+    case 'string':
+      return JSON.stringify(value)
+    case 'object': {
+      if (Array.isArray(value)) {
+        return `[${value.map(v => (v === undefined ? 'null' : canonicalJson(v))).join(',')}]`
+      }
+      const obj = value as Record<string, unknown>
+      const keys = Object.keys(obj)
+        .filter(k => obj[k] !== undefined)
+        .sort()
+      return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`
+    }
+    default:
+      throw new TypeError(`canonical JSON cannot encode a value of type ${typeof value}`)
+  }
+}
+
 export async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
   return bytesToHex(new Uint8Array(digest))

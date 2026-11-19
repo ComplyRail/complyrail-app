@@ -9,6 +9,7 @@ import { assetSymbol } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
 import {
   buildIvmsPayload,
+  canonicalJson,
   reclaimExpired,
   rejectPayment,
   releasePayment,
@@ -56,9 +57,10 @@ export function PaymentDetail({ id }: { id: string }) {
       amount: fromUnits(payment.amount),
       asset: assetSymbol(payment.asset),
     })
-    const json = JSON.stringify(payload)
-    const hash = await sha256Hex(json)
-    setPayloadJson(JSON.stringify(payload, null, 2))
+    // Hash the RFC 8785 canonical form so any implementation can reproduce it.
+    const canonical = canonicalJson(payload)
+    const hash = await sha256Hex(canonical)
+    setPayloadJson(canonical)
     await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, 'IVMS101.2023'))
   }
 
