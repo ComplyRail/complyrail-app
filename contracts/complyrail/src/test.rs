@@ -26,6 +26,10 @@ fn key(env: &Env, b: u8) -> BytesN<32> {
 }
 
 fn setup<'a>() -> Setup<'a> {
+    setup_with_ttl(None)
+}
+
+fn setup_with_ttl<'a>(payment_ttl: Option<u64>) -> Setup<'a> {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
@@ -41,7 +45,7 @@ fn setup<'a>() -> Setup<'a> {
     StellarAssetClient::new(&env, &token_addr).mint(&vasp_a, &1_000_000);
     let token = TokenClient::new(&env, &token_addr);
 
-    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    let id = env.register(ComplyRail, (admin.clone(), payment_ttl));
     let client = ComplyRailClient::new(&env, &id);
     client.register_vasp(
         &vasp_a,
@@ -524,4 +528,41 @@ fn attest_after_reclaim_is_rejected() {
         Err(Ok(Error::PaymentNotPending))
     );
     assert_eq!(t.client.get_payment(&id).attestation_hash, None);
+}
+
+// ----- extreme payment_ttl values (#64) ------------------------------------
+
+#[test]
+fn zero_ttl_makes_payment_reclaimable_immediately() {
+    let t = setup_with_ttl(Some(0));
+    let id = submit_held(&t);
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.created_at, 1_000);
+    assert_eq!(p.expires_at, 1_000);
+
+    // Expiry is inclusive, so reclaim succeeds in the same ledger.
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn max_ttl_makes_submission_fail_without_side_effects() {
+    let t = setup_with_ttl(Some(u64::MAX));
+    // now (1_000) + u64::MAX overflows. The host aborts the call, which
+    // surfaces as an invocation failure rather than a contract error.
+    let r = t.client.try_submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert!(matches!(r, Err(Err(_))));
+
+    // The failed call is rolled back: no payment, no escrowed funds.
+    assert_eq!(t.client.payment_count(), 0);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
 }
