@@ -259,6 +259,49 @@ fn above_threshold_full_flow() {
 }
 
 #[test]
+fn release_fails_if_beneficiary_vasp_suspended_after_submit() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+
+    let r = t.client.try_release_payment(&id, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::VaspNotActive)));
+    // admin override does not bypass the beneficiary status check
+    let r = t.client.try_release_payment(&id, &t.admin);
+    assert_eq!(r, Err(Ok(Error::VaspNotActive)));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn release_fails_if_beneficiary_vasp_revoked_or_expired() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.set_vasp_expiry(&t.vasp_b, &Some(2_000));
+    t.env.ledger().set_timestamp(2_000);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::VaspNotActive))
+    );
+}
+
+#[test]
 fn reject_refunds_originator() {
     let t = setup();
     let id = t.client.submit_payment(

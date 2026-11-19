@@ -576,6 +576,11 @@ impl ComplyRail {
         if caller != p.to_vasp && caller != admin(&env)? {
             return Err(Error::Unauthorized);
         }
+        // Re-check the beneficiary VASP at release time: it may have been
+        // suspended, revoked or expired after the payment was submitted.
+        // This applies to the admin override too; the admin cannot release
+        // funds to a VASP that is not currently active.
+        require_active_vasp(&env, &p.to_vasp)?;
         if p.requires_attestation && p.attestation_hash.is_none() {
             return Err(Error::AttestationRequired);
         }
