@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { useAdmin, usePayment, useVasp } from '@/lib/hooks'
+import { useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { IvmsDecryptPanel } from './IvmsDecryptPanel'
+import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { assetSymbol } from '@/lib/config'
@@ -21,6 +22,7 @@ import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
 
 export function PaymentDetail({ id }: { id: string }) {
   const { payment, loading, error, reload } = usePayment(id)
+  const clock = useLedgerClock()
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
   const { admin } = useAdmin()
@@ -38,7 +40,7 @@ export function PaymentDetail({ id }: { id: string }) {
   const isOriginator = address === payment.fromVasp
   const canResolve = !!address && (address === payment.toVasp || address === admin)
   const needsAttestation = payment.requiresAttestation && !payment.attestationHash
-  const expired = Date.now() / 1000 >= payment.expiresAt
+  const expired = clock.now >= payment.expiresAt
 
   const act = async (label: string, fn: Parameters<typeof tx.run>[1]) => {
     const ok = await tx.run(label, async s => {
@@ -122,6 +124,8 @@ export function PaymentDetail({ id }: { id: string }) {
           {payment.attestedAt && <Row label="Submitted">{new Date(payment.attestedAt * 1000).toLocaleString()}</Row>}
         </Card>
       )}
+
+      <ClockWarning clock={clock} />
 
       <div className="my-4"><TxStatus {...tx} /></div>
 
