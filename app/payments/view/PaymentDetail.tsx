@@ -15,6 +15,7 @@ import {
   sha256Hex,
   submitAttestation,
 } from '@/lib/contract'
+import { canonicalJson, verifyIvmsPayload, type PayloadCheck } from '@/lib/ivms'
 import { PaymentStatus } from '@/lib/types'
 
 export function PaymentDetail({ id }: { id: string }) {
@@ -27,6 +28,9 @@ export function PaymentDetail({ id }: { id: string }) {
   const [names, setNames] = useState({ originator: '', beneficiary: '' })
   const [payloadJson, setPayloadJson] = useState<string | null>(null)
   const [reason, setReason] = useState('')
+  const [received, setReceived] = useState('')
+  const [receivedCheck, setReceivedCheck] = useState<PayloadCheck | null>(null)
+  const [overrideRelease, setOverrideRelease] = useState(false)
 
   if (loading) return <Shell><div className="text-center text-muted-foreground">Loading from contract…</div></Shell>
   if (error || !payment) return <Shell><div className="text-center text-red-600">Payment #{id} not found</div></Shell>
@@ -36,6 +40,13 @@ export function PaymentDetail({ id }: { id: string }) {
   const canResolve = !!address && (address === payment.toVasp || address === admin)
   const needsAttestation = payment.requiresAttestation && !payment.attestationHash
   const expired = Date.now() / 1000 >= payment.expiresAt
+
+  const checkReceived = async (json: string) => {
+    setReceived(json)
+    setReceivedCheck(json.trim() ? await verifyIvmsPayload(json, payment.attestationHash || '') : null)
+  }
+
+  const releaseAllowed = !needsAttestation && (receivedCheck?.status === 'match' || overrideRelease)
 
   const act = async (label: string, fn: Parameters<typeof tx.run>[1]) => {
     const ok = await tx.run(label, async s => {
@@ -56,8 +67,7 @@ export function PaymentDetail({ id }: { id: string }) {
       amount: fromUnits(payment.amount),
       asset: assetSymbol(payment.asset),
     })
-    const json = JSON.stringify(payload)
-    const hash = await sha256Hex(json)
+    const hash = await sha256Hex(canonicalJson(payload))
     setPayloadJson(JSON.stringify(payload, null, 2))
     await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, 'IVMS101.2023'))
   }
@@ -141,8 +151,31 @@ export function PaymentDetail({ id }: { id: string }) {
               ? 'Release is blocked until the originating VASP submits an attestation.'
               : 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'}
           </p>
+          {!needsAttestation && (
+            <div className="space-y-2 mb-4">
+              <label htmlFor="received-payload" className="block text-sm font-medium">Received IVMS101 payload (JSON)</label>
+              <textarea id="received-payload" rows={6} value={received} placeholder="Paste the payload you received off-chain"
+                onChange={e => checkReceived(e.target.value)}
+                className="w-full px-3 py-2 border border-border rounded bg-background font-mono text-xs" />
+              {receivedCheck?.status === 'match' && (
+                <p className="text-sm text-green-700">✓ Matches the on-chain attestation hash</p>
+              )}
+              {receivedCheck?.status === 'mismatch' && (
+                <p className="text-sm text-red-600">✗ Does not match the on-chain attestation hash</p>
+              )}
+              {receivedCheck?.status === 'invalid' && (
+                <p className="text-sm text-red-600">✗ {receivedCheck.error}</p>
+              )}
+              {receivedCheck?.status !== 'match' && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={overrideRelease} onChange={e => setOverrideRelease(e.target.checked)} />
+                  Release without a verified payload (override)
+                </label>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <button disabled={tx.pending || needsAttestation}
+            <button disabled={tx.pending || !releaseAllowed}
               onClick={() => act('Payment released to beneficiary', s => releasePayment(s, payment.id))}
               className="px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
               Release to beneficiary
