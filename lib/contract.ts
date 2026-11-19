@@ -194,8 +194,15 @@ export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
 
+/** Page size for `list_vasps`; the contract caps a single page at 100. */
+const VASP_PAGE_SIZE = 100
+
 export async function listVasps(): Promise<VaspEntry[]> {
-  const addresses = await read<string[]>('list_vasps')
+  const count = await read<number>('vasp_count')
+  const addresses: string[] = []
+  for (let start = 0; start < count; start += VASP_PAGE_SIZE) {
+    addresses.push(...await read<string[]>('list_vasps', { start, limit: VASP_PAGE_SIZE }))
+  }
   const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))
   return raws.map(mapVasp)
 }

@@ -33,6 +33,9 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Upper bound on entries returned by one `list_vasps` call.
+pub const MAX_VASP_PAGE: u32 = 100;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -118,7 +121,10 @@ enum DataKey {
     Admin,
     PaymentTtl,
     NextPaymentId,
-    VaspList,
+    /// Number of registered VASPs; also the next free index.
+    VaspCount,
+    /// Registered VASP address at position `index` (one persistent entry each).
+    VaspAt(u32),
     Vasp(Address),
     Threshold(Address, String),
     Payment(u64),
@@ -249,6 +255,13 @@ fn normalise_jurisdiction(env: &Env, raw: &String) -> Option<String> {
     }
 }
 
+fn vasp_count_value(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::VaspCount)
+        .unwrap_or(0)
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
@@ -342,7 +355,7 @@ impl ComplyRail {
             &payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL),
         );
         s.set(&DataKey::NextPaymentId, &0u64);
-        s.set(&DataKey::VaspList, &Vec::<Address>::new(&env));
+        s.set(&DataKey::VaspCount, &0u32);
         bump_instance(&env);
     }
 
@@ -390,13 +403,11 @@ impl ComplyRail {
         };
         save_vasp(&env, &entry);
 
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::VaspList)
-            .unwrap_or_else(|| Vec::new(&env));
-        list.push_back(address.clone());
-        env.storage().instance().set(&DataKey::VaspList, &list);
+        let index = vasp_count_value(&env);
+        let at = DataKey::VaspAt(index);
+        env.storage().persistent().set(&at, &address);
+        bump_persistent(&env, &at);
+        env.storage().instance().set(&DataKey::VaspCount, &(index + 1));
         bump_instance(&env);
 
         VaspRegistered {
@@ -455,11 +466,27 @@ impl ComplyRail {
         }
     }
 
-    pub fn list_vasps(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::VaspList)
-            .unwrap_or_else(|| Vec::new(&env))
+    /// Number of VASPs ever registered (the valid `list_vasps` index range).
+    pub fn vasp_count(env: Env) -> u32 {
+        vasp_count_value(&env)
+    }
+
+    /// Up to `limit` (capped at `MAX_VASP_PAGE`) registered VASP addresses,
+    /// starting at index `start`. Returns an empty list past the end.
+    pub fn list_vasps(env: Env, start: u32, limit: u32) -> Vec<Address> {
+        let count = vasp_count_value(&env);
+        let mut out = Vec::new(&env);
+        let end = start
+            .saturating_add(limit.min(MAX_VASP_PAGE))
+            .min(count);
+        for index in start..end {
+            let key = DataKey::VaspAt(index);
+            if let Some(addr) = env.storage().persistent().get::<_, Address>(&key) {
+                bump_persistent(&env, &key);
+                out.push_back(addr);
+            }
+        }
+        out
     }
 
     // ----- Thresholds ------------------------------------------------------

@@ -114,7 +114,8 @@ fn register_and_get_vasp() {
     assert_eq!(v.jurisdiction, s(&t.env, "US"));
     assert_eq!(v.status, VaspStatus::Active);
     assert_eq!(v.added_at, 1_000);
-    assert_eq!(t.client.list_vasps().len(), 2);
+    assert_eq!(t.client.list_vasps(&0, &10).len(), 2);
+    assert_eq!(t.client.vasp_count(), 2);
     assert!(t.client.is_vasp_active(&t.vasp_a));
 }
 
@@ -456,4 +457,50 @@ fn remove_threshold_normalises_jurisdiction() {
         t.client.try_remove_threshold(a, &s(&t.env, "XX")),
         Err(Ok(Error::UnknownJurisdiction))
     );
+}
+
+#[test]
+fn vasp_list_is_paged_over_many_registrations() {
+    let t = setup();
+    // setup() registers 2 VASPs; add 298 more for 300 in total.
+    let mut all = Vec::new(&t.env);
+    all.push_back(t.vasp_a.clone());
+    all.push_back(t.vasp_b.clone());
+    for i in 0..298u32 {
+        let addr = Address::generate(&t.env);
+        t.client.register_vasp(
+            &addr,
+            &s(&t.env, "Bulk"),
+            &s(&t.env, "US"),
+            &key(&t.env, (i % 250) as u8 + 1),
+            &None,
+        );
+        all.push_back(addr);
+    }
+    assert_eq!(t.client.vasp_count(), 300);
+
+    // pages are capped at MAX_VASP_PAGE even when a bigger limit is asked
+    let first = t.client.list_vasps(&0, &1_000);
+    assert_eq!(first.len(), MAX_VASP_PAGE);
+    assert_eq!(first.get(0).unwrap(), all.get(0).unwrap());
+
+    // walk the whole list page by page and compare with registration order
+    let mut seen = Vec::new(&t.env);
+    let mut start = 0;
+    loop {
+        let page = t.client.list_vasps(&start, &MAX_VASP_PAGE);
+        if page.is_empty() {
+            break;
+        }
+        for addr in page.iter() {
+            seen.push_back(addr);
+        }
+        start += MAX_VASP_PAGE;
+    }
+    assert_eq!(seen, all);
+
+    // the tail page and past-the-end requests
+    assert_eq!(t.client.list_vasps(&290, &100).len(), 10);
+    assert_eq!(t.client.list_vasps(&300, &10).len(), 0);
+    assert_eq!(t.client.list_vasps(&u32::MAX, &u32::MAX).len(), 0);
 }
