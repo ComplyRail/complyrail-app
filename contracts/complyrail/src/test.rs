@@ -97,6 +97,51 @@ fn constructor_respects_custom_ttl() {
 }
 
 #[test]
+fn constructor_accepts_max_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
+    let id = env.register(ComplyRail, (admin, Some(MAX_PAYMENT_TTL)));
+    let c = ComplyRailClient::new(&env, &id);
+    c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
+    c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
+    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
+    assert_eq!(c.get_payment(&pid).expires_at, 1_000 + MAX_PAYMENT_TTL);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn constructor_rejects_u64_max_ttl() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    env.register(ComplyRail, (admin, Some(u64::MAX)));
+}
+
+#[test]
+fn submit_payment_rejects_expiry_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(u64::MAX - 10);
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
+    let id = env.register(ComplyRail, (admin, Some(MAX_PAYMENT_TTL)));
+    let c = ComplyRailClient::new(&env, &id);
+    c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
+    c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
+    let r = c.try_submit_payment(&a, &b, &Address::generate(&env), &sac.address(), &10);
+    assert_eq!(r, Err(Ok(Error::ExpiryOverflow)));
+    assert_eq!(c.payment_count(), 0);
+}
+
+#[test]
 fn transfer_admin_works() {
     let t = setup();
     let new_admin = Address::generate(&t.env);

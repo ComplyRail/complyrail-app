@@ -27,7 +27,7 @@ originator VASP                     contract                      beneficiary VA
 
 | Function | Auth | Notes |
 |---|---|---|
-| `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days |
+| `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days, max 100 years (larger values are rejected, so `now + ttl` cannot overflow) |
 | `transfer_admin(new_admin)` | admin + new admin | |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
