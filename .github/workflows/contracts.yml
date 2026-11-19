@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: wasm32v1-none
           components: rustfmt, clippy
@@ -57,6 +57,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$SIZE" -gt "$LIMIT" ]; then
             echo "::error::WASM grew to $SIZE bytes, over the limit of $LIMIT. See the update procedure in contracts/README.md."
+            exit 1
+          fi
+      - name: Reproducible build check
+        run: |
+          WASM=target/wasm32v1-none/release/complyrail.wasm
+          FIRST=$(sha256sum "$WASM" | cut -d' ' -f1)
+          # Second build from a clean target directory, so nothing is reused
+          rm -rf target
+          stellar contract build
+          SECOND=$(sha256sum "$WASM" | cut -d' ' -f1)
+          {
+            echo "### Reproducible build"
+            echo ""
+            echo "- Build 1: \`$FIRST\`"
+            echo "- Build 2 (clean target): \`$SECOND\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FIRST" != "$SECOND" ]; then
+            echo "::error::Two builds of the same commit produced different WASM"
             exit 1
           fi
       - uses: actions/upload-artifact@v4
