@@ -109,6 +109,12 @@ describe('mapEvent', () => {
   it('ignores events it does not know', () => {
     expect(mapEvent({ ...base, topics: ['transfer', G1], data: 1n })).toBeNull()
   })
+
+  it('drops inherited object keys such as toString, constructor and __proto__', () => {
+    for (const topic of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      expect(mapEvent({ ...base, topics: [topic, G1], data: 1n })).toBeNull()
+    }
+  })
 })
 
 describe('helpers', () => {

@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react'
 import { explorerBase, isContractConfigured } from '@/lib/config'
+import { TxFailedError } from '@/lib/contract'
 import { useWallet } from '@/components/WalletProvider'
 
 export function NotDeployedBanner() {
@@ -20,11 +21,13 @@ export function useTx() {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
+  const [txHash, setTxHash] = useState<string | null>(null)
 
   const run = useCallback(
     async <T,>(label: string, fn: (s: NonNullable<typeof signer>) => Promise<T>): Promise<T | undefined> => {
       setError(null)
       setDone(null)
+      setTxHash(null)
       if (!signer) {
         await connect()
         setError('Connect your wallet, then try again.')
@@ -36,7 +39,12 @@ export function useTx() {
         setDone(label)
         return out
       } catch (e) {
-        setError(friendlyError(e))
+        if (e instanceof TxFailedError) {
+          setError(e.message)
+          setTxHash(e.txHash || null)
+        } else {
+          setError(friendlyError(e))
+        }
         return undefined
       } finally {
         setPending(false)
@@ -45,7 +53,7 @@ export function useTx() {
     [signer, connect],
   )
 
-  return { run, pending, error, done, signedIn: !!signer }
+  return { run, pending, error, done, txHash, signedIn: !!signer }
 }
 
 const CONTRACT_ERRORS: Record<number, string> = {
@@ -73,9 +81,31 @@ export function friendlyError(e: unknown): string {
   return msg.length > 300 ? msg.slice(0, 300) + '…' : msg
 }
 
-export function TxStatus({ pending, error, done }: { pending: boolean; error: string | null; done: string | null }) {
+export function TxStatus({
+  pending,
+  error,
+  done,
+  txHash,
+}: {
+  pending: boolean
+  error: string | null
+  done: string | null
+  /** Set when a transaction failed on-chain, so the user can inspect it. */
+  txHash?: string | null
+}) {
   if (pending) return <p className="text-sm text-muted-foreground">Waiting for wallet signature and confirmation…</p>
-  if (error) return <p className="text-sm text-red-600">{error}</p>
+  if (error)
+    return (
+      <p className="text-sm text-red-600">
+        {error}
+        {txHash && (
+          <>
+            {' '}
+            <ExplorerLink kind="tx" id={txHash}>View transaction</ExplorerLink>
+          </>
+        )}
+      </p>
+    )
   if (done) return <p className="text-sm text-green-700">✓ {done}</p>
   return null
 }

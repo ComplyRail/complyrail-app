@@ -119,7 +119,8 @@ export function mapEvent(e: {
   data: unknown
 }): AuditEvent | null {
   const type = e.topics[0] as AuditEventType
-  if (!(type in EVENT_LABELS)) return null
+  // Own-property check only: `in` would also match inherited keys such as `toString`.
+  if (!Object.prototype.hasOwnProperty.call(EVENT_LABELS, type)) return null
   const details: Record<string, string> = {}
   if (e.data && typeof e.data === 'object' && !(e.data instanceof Uint8Array)) {
     for (const [k, v] of Object.entries(e.data as Record<string, unknown>)) details[k] = stringify(v)
@@ -143,11 +144,26 @@ export function mapEvent(e: {
 // Client
 // ---------------------------------------------------------------------------
 
-export type Signer = Pick<contract.ClientOptions, 'signTransaction'> & { publicKey: string }
+export type Signer = Pick<contract.ClientOptions, 'signTransaction'> & {
+  publicKey: string
+  /** Wallet kit module ID, so clients are keyed per wallet as well as per address. */
+  walletId: string
+}
 
 type AnyClient = contract.Client & Record<string, (args?: any) => Promise<contract.AssembledTransaction<any>>>
 
+/**
+ * Cache lifetime: one client per (wallet ID, public key), kept until the
+ * wallet disconnects. A client captures the wallet's `signTransaction` closure
+ * when it is created, so a stale entry would sign with an old signer. The
+ * wallet provider calls `clearClientCache()` on disconnect.
+ */
 const clients = new Map<string, Promise<AnyClient>>()
+
+/** Drop every cached client so the next call builds one with the current signer. */
+export function clearClientCache(): void {
+  clients.clear()
+}
 
 function assertConfigured() {
   if (!isContractConfigured) {
@@ -157,7 +173,7 @@ function assertConfigured() {
 
 async function getClient(signer?: Signer): Promise<AnyClient> {
   assertConfigured()
-  const key = signer?.publicKey ?? '__read__'
+  const key = signer ? `${signer.walletId}:${signer.publicKey}` : '__read__'
   if (!clients.has(key)) {
     clients.set(
       key,
@@ -179,12 +195,28 @@ async function read<T>(method: string, args?: Record<string, unknown>): Promise<
   return unwrap<T>(tx.result)
 }
 
+/** A transaction was included in a ledger but failed on-chain. Carries the hash for inspection. */
+export class TxFailedError extends Error {
+  readonly txHash: string
+
+  constructor(txHash: string) {
+    super('The transaction was included on-chain but failed.')
+    this.name = 'TxFailedError'
+    this.txHash = txHash
+  }
+}
+
 async function write<T>(signer: Signer, method: string, args: Record<string, unknown>): Promise<T> {
   const c = await getClient(signer)
   const tx = await c[method](args)
   // Surface contract errors from simulation before asking the wallet to sign.
   unwrap(tx.result)
   const sent = await tx.signAndSend()
+  // Check the final status before reading the result, so a FAILED transaction
+  // is never reported as success.
+  if (sent.getTransactionResponse?.status === rpc.Api.GetTransactionStatus.FAILED) {
+    throw new TxFailedError(sent.sendTransactionResponse?.hash ?? '')
+  }
   return unwrap<T>(sent.result)
 }
 
@@ -360,6 +392,39 @@ export function buildIvmsPayload(p: {
       accountNumber: [p.beneficiaryAccount],
     },
     transfer: { amount: p.amount, asset: p.asset },
+  }
+}
+
+/**
+ * Canonical JSON per RFC 8785 (JSON Canonicalization Scheme): no whitespace,
+ * object keys sorted by UTF-16 code units, and numbers in ES Number format.
+ * Two implementations that agree on the object produce the same bytes, so
+ * the hash does not depend on key order or formatting. Throws on values JSON
+ * cannot represent (NaN, Infinity, bigint, functions, symbols).
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null) return 'null'
+  switch (typeof value) {
+    case 'boolean':
+      return value ? 'true' : 'false'
+    case 'number':
+      if (!Number.isFinite(value)) throw new TypeError('canonical JSON cannot encode a non-finite number')
+      // JSON.stringify uses the ES Number::toString form that RFC 8785 requires.
+      return JSON.stringify(value)
+    case 'string':
+      return JSON.stringify(value)
+    case 'object': {
+      if (Array.isArray(value)) {
+        return `[${value.map(v => (v === undefined ? 'null' : canonicalJson(v))).join(',')}]`
+      }
+      const obj = value as Record<string, unknown>
+      const keys = Object.keys(obj)
+        .filter(k => obj[k] !== undefined)
+        .sort()
+      return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`
+    }
+    default:
+      throw new TypeError(`canonical JSON cannot encode a value of type ${typeof value}`)
   }
 }
 
