@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useContext, useEffect, useState } from 'react'
 import * as api from './contract'
 import { isContractConfigured } from './config'
+import { RoleContext } from './role-context'
 import type { Role } from './rbac'
 import type { AuditEvent, PaymentRecord, ThresholdRow, VaspEntry } from './types'
 
@@ -14,7 +15,7 @@ interface AsyncState<T> {
 }
 
 /** Runs `fn` on mount and whenever `key` changes; exposes `reload` after writes. */
-function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string): AsyncState<T> {
+function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string, enabled = true): AsyncState<T> {
   const [data, setData] = useState<T>(initial)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -22,7 +23,7 @@ function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string): Asy
 
   useEffect(() => {
     let cancelled = false
-    if (!isContractConfigured) {
+    if (!isContractConfigured || !enabled) {
       setLoading(false)
       return
     }
@@ -36,7 +37,7 @@ function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string): Asy
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, tick])
+  }, [key, tick, enabled])
 
   const reload = useCallback(() => setTick(t => t + 1), [])
   return { data, loading, error, reload }
@@ -90,8 +91,19 @@ export async function fetchRole(address?: string): Promise<Role> {
   return (await api.isVaspActive(address)) ? 'vasp' : 'inactive-vasp'
 }
 
-/** Role of the connected wallet, derived from on-chain state. */
+/**
+ * Role of the connected wallet, derived from on-chain state. Uses the role
+ * shared by RoleProvider when it is for the same wallet; otherwise fetches it.
+ */
 export function useRole(address?: string): { role: Role; loading: boolean } {
-  const q = useContractQuery<Role>(() => fetchRole(address), 'viewer', `role:${address ?? ''}`)
-  return { role: q.data, loading: q.loading }
+  const shared = useContext(RoleContext)
+  const useShared = shared !== null && shared.address === address
+  const own = useContractQuery<Role>(
+    () => fetchRole(address),
+    'viewer',
+    `role:${address ?? ''}`,
+    !useShared,
+  )
+  if (useShared) return { role: shared.role, loading: shared.loading }
+  return { role: own.data, loading: own.loading }
 }
