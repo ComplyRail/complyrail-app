@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, IntoVal, String,
 };
 
 struct Setup<'a> {
@@ -528,6 +528,147 @@ fn attest_after_reclaim_is_rejected() {
         Err(Ok(Error::PaymentNotPending))
     );
     assert_eq!(t.client.get_payment(&id).attestation_hash, None);
+}
+
+// ----- admin hand-over (#65) ------------------------------------------------
+
+/// Creates a contract with real auth checks and hands admin rights from
+/// `admin` to `new_admin`. Only the two transfer signatures are mocked.
+fn env_after_admin_transfer() -> (Env, Address, Address, Address) {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+
+    let args: soroban_sdk::Vec<soroban_sdk::Val> = (new_admin.clone(),).into_val(&env);
+    let by_admin = MockAuthInvoke {
+        contract: &id,
+        fn_name: "transfer_admin",
+        args: args.clone(),
+        sub_invokes: &[],
+    };
+    let by_new = MockAuthInvoke {
+        contract: &id,
+        fn_name: "transfer_admin",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[
+        MockAuth {
+            address: &admin,
+            invoke: &by_admin,
+        },
+        MockAuth {
+            address: &new_admin,
+            invoke: &by_new,
+        },
+    ]);
+    ComplyRailClient::new(&env, &id).transfer_admin(&new_admin);
+    (env, id, admin, new_admin)
+}
+
+#[test]
+fn previous_admin_loses_registry_and_threshold_rights() {
+    let (env, id, admin, new_admin) = env_after_admin_transfer();
+    let client = ComplyRailClient::new(&env, &id);
+    assert_eq!(client.admin(), new_admin);
+    assert_ne!(client.admin(), admin);
+
+    let vasp = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // The old admin signs, but the contract now requires the new admin.
+    let args = (
+        vasp.clone(),
+        s(&env, "Old Admin"),
+        s(&env, "US"),
+        key(&env, 1),
+        None::<u64>,
+    )
+        .into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "register_vasp",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &inv,
+    }]);
+    let r = client.try_register_vasp(
+        &vasp,
+        &s(&env, "Old Admin"),
+        &s(&env, "US"),
+        &key(&env, 1),
+        &None,
+    );
+    assert!(matches!(r, Err(Err(_))));
+    assert_eq!(client.list_vasps().len(), 0);
+
+    let args = (token.clone(), s(&env, "US"), 100i128).into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "set_threshold",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &inv,
+    }]);
+    let r = client.try_set_threshold(&token, &s(&env, "US"), &100);
+    assert!(matches!(r, Err(Err(_))));
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 0);
+}
+
+#[test]
+fn new_admin_can_register_and_set_threshold() {
+    let (env, id, _admin, new_admin) = env_after_admin_transfer();
+    let client = ComplyRailClient::new(&env, &id);
+
+    let vasp = Address::generate(&env);
+    let args = (
+        vasp.clone(),
+        s(&env, "New Admin VASP"),
+        s(&env, "US"),
+        key(&env, 1),
+        None::<u64>,
+    )
+        .into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "register_vasp",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &inv,
+    }]);
+    client.register_vasp(
+        &vasp,
+        &s(&env, "New Admin VASP"),
+        &s(&env, "US"),
+        &key(&env, 1),
+        &None,
+    );
+    assert!(client.is_vasp_active(&vasp));
+
+    let token = Address::generate(&env);
+    let args = (token.clone(), s(&env, "US"), 100i128).into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "set_threshold",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &inv,
+    }]);
+    client.set_threshold(&token, &s(&env, "US"), &100);
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 100);
 }
 
 // ----- extreme payment_ttl values (#64) ------------------------------------
