@@ -99,6 +99,7 @@ const EVENT_LABELS: Record<AuditEventType, string> = {
   att_sub: 'Attestation submitted',
   pay_rel: 'Payment released',
   pay_rej: 'Payment rejected',
+  pay_recl: 'Payment reclaimed',
 }
 
 function stringify(v: unknown): string {
@@ -124,7 +125,7 @@ export function mapEvent(e: {
   if (e.data && typeof e.data === 'object' && !(e.data instanceof Uint8Array)) {
     for (const [k, v] of Object.entries(e.data as Record<string, unknown>)) details[k] = stringify(v)
   }
-  if (details.amount && (type === 'pay_sub' || type === 'pay_rel' || type === 'thr_set')) {
+  if (details.amount && (type === 'pay_sub' || type === 'pay_rel' || type === 'pay_recl' || type === 'thr_set')) {
     details.amount = fromUnits(details.amount)
   }
   return {

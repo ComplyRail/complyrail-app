@@ -41,7 +41,7 @@ originator VASP                     contract                      beneficiary VA
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
 
-Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
+Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`, `pay_recl`.
 
 ## Develop
 

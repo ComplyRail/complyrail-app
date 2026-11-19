@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, Event, String,
 };
 
 struct Setup<'a> {
@@ -321,6 +321,28 @@ fn reclaim_only_after_expiry() {
     t.client.reclaim_expired(&id);
     assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
     assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn reclaim_emits_reclaimed_event_not_rejected() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+
+    // Only this contract's events: the token contract emits its own transfer events.
+    let contract_id = t.client.address.clone();
+    let emitted = t.env.events().all().filter_by_contract(&contract_id);
+    let expected = PaymentReclaimed { id, amount: 5_000 }.to_xdr(&t.env, &contract_id);
+    // The reclaim emits exactly one event, and it is pay_recl. No pay_rej, so the
+    // audit log can't label a reclaimed payment as rejected.
+    assert_eq!(emitted.events(), &[expected][..]);
 }
 
 #[test]

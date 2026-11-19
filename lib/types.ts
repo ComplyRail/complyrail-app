@@ -51,6 +51,7 @@ export type AuditEventType =
   | 'att_sub'
   | 'pay_rel'
   | 'pay_rej'
+  | 'pay_recl'
 
 export interface AuditEvent {
   id: string

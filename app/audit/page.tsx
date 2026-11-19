@@ -13,6 +13,7 @@ const EVENT_TYPES = [
   { value: 'att_sub', label: 'Attestation Submitted' },
   { value: 'pay_rel', label: 'Payment Released' },
   { value: 'pay_rej', label: 'Payment Rejected' },
+  { value: 'pay_recl', label: 'Payment Reclaimed' },
 ]
 
 export default function AuditLogPage() {
