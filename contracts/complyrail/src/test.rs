@@ -114,7 +114,8 @@ fn register_and_get_vasp() {
     assert_eq!(v.jurisdiction, s(&t.env, "US"));
     assert_eq!(v.status, VaspStatus::Active);
     assert_eq!(v.added_at, 1_000);
-    assert_eq!(t.client.list_vasps().len(), 2);
+    assert_eq!(t.client.list_vasps(&0, &10).len(), 2);
+    assert_eq!(t.client.vasp_count(), 2);
     assert!(t.client.is_vasp_active(&t.vasp_a));
 }
 
@@ -377,4 +378,148 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- jurisdiction normalisation & allowlist ------------------------------
+
+#[test]
+fn jurisdiction_is_stored_uppercase() {
+    let t = setup();
+    let c = &t.client;
+    let v = Address::generate(&t.env);
+    c.register_vasp(&v, &s(&t.env, "Lower"), &s(&t.env, "sg"), &key(&t.env, 9), &None);
+    assert_eq!(c.get_vasp(&v).jurisdiction, s(&t.env, "SG"));
+}
+
+#[test]
+fn threshold_lowercase_matches_uppercase_rule() {
+    let t = setup();
+    let a = &t.token.address;
+    // "us" and "US" are the same jurisdiction
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "us")), 3_000);
+    t.client.set_threshold(a, &s(&t.env, "gb"), &500);
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "GB")), 500);
+}
+
+#[test]
+fn unknown_jurisdiction_rejected() {
+    let t = setup();
+    let v = Address::generate(&t.env);
+    assert_eq!(
+        t.client.try_register_vasp(&v, &s(&t.env, "X"), &s(&t.env, "XX"), &key(&t.env, 3), &None),
+        Err(Ok(Error::UnknownJurisdiction))
+    );
+    assert_eq!(
+        t.client.try_set_threshold(&t.token.address, &s(&t.env, "Xyz"), &1),
+        Err(Ok(Error::UnknownJurisdiction))
+    );
+}
+
+#[test]
+fn jurisdiction_length_is_checked() {
+    let t = setup();
+    let v = Address::generate(&t.env);
+    // empty and three-letter codes that are not on the allowlist
+    for code in ["", "USA", "toolong"] {
+        assert_eq!(
+            t.client.try_register_vasp(&v, &s(&t.env, "X"), &s(&t.env, code), &key(&t.env, 4), &None),
+            Err(Ok(Error::UnknownJurisdiction)),
+            "code {code:?} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn wildcard_applies_after_threshold_removed() {
+    let t = setup();
+    let a = &t.token.address;
+    t.client.set_threshold(a, &s(&t.env, "*"), &1_000);
+    t.client.set_threshold(a, &s(&t.env, "SG"), &5_000);
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "SG")), 5_000);
+
+    t.client.remove_threshold(a, &s(&t.env, "SG"));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "SG")), 1_000);
+
+    // removing again is a no-op
+    t.client.remove_threshold(a, &s(&t.env, "SG"));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "SG")), 1_000);
+}
+
+#[test]
+fn remove_threshold_normalises_jurisdiction() {
+    let t = setup();
+    let a = &t.token.address;
+    t.client.set_threshold(a, &s(&t.env, "*"), &1_000);
+    t.client.set_threshold(a, &s(&t.env, "HK"), &7_000);
+    t.client.remove_threshold(a, &s(&t.env, "hk"));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "HK")), 1_000);
+    assert_eq!(
+        t.client.try_remove_threshold(a, &s(&t.env, "XX")),
+        Err(Ok(Error::UnknownJurisdiction))
+    );
+}
+
+#[test]
+fn vasp_list_is_paged_over_many_registrations() {
+    let t = setup();
+    // setup() registers 2 VASPs; add 298 more for 300 in total.
+    let mut all = Vec::new(&t.env);
+    all.push_back(t.vasp_a.clone());
+    all.push_back(t.vasp_b.clone());
+    for i in 0..298u32 {
+        let addr = Address::generate(&t.env);
+        t.client.register_vasp(
+            &addr,
+            &s(&t.env, "Bulk"),
+            &s(&t.env, "US"),
+            &key(&t.env, (i % 250) as u8 + 1),
+            &None,
+        );
+        all.push_back(addr);
+    }
+    assert_eq!(t.client.vasp_count(), 300);
+
+    // pages are capped at MAX_VASP_PAGE even when a bigger limit is asked
+    let first = t.client.list_vasps(&0, &1_000);
+    assert_eq!(first.len(), MAX_VASP_PAGE);
+    assert_eq!(first.get(0).unwrap(), all.get(0).unwrap());
+
+    // walk the whole list page by page and compare with registration order
+    let mut seen = Vec::new(&t.env);
+    let mut start = 0;
+    loop {
+        let page = t.client.list_vasps(&start, &MAX_VASP_PAGE);
+        if page.is_empty() {
+            break;
+        }
+        for addr in page.iter() {
+            seen.push_back(addr);
+        }
+        start += MAX_VASP_PAGE;
+    }
+    assert_eq!(seen, all);
+
+    // the tail page and past-the-end requests
+    assert_eq!(t.client.list_vasps(&290, &100).len(), 10);
+    assert_eq!(t.client.list_vasps(&300, &10).len(), 0);
+    assert_eq!(t.client.list_vasps(&u32::MAX, &u32::MAX).len(), 0);
+}
+
+#[test]
+fn transfer_admin_emits_admin_chg() {
+    use soroban_sdk::{testutils::Events, Event};
+    let t = setup();
+    let new_admin = Address::generate(&t.env);
+    t.client.transfer_admin(&new_admin);
+
+    let expected = AdminChanged {
+        new_admin: new_admin.clone(),
+        old_admin: t.admin.clone(),
+    }
+    .to_xdr(&t.env, &t.client.address);
+    let events = t.env.events().all();
+    assert!(
+        events.events().contains(&expected),
+        "admin_chg event with old and new admin should be emitted"
+    );
 }
