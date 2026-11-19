@@ -144,11 +144,26 @@ export function mapEvent(e: {
 // Client
 // ---------------------------------------------------------------------------
 
-export type Signer = Pick<contract.ClientOptions, 'signTransaction'> & { publicKey: string }
+export type Signer = Pick<contract.ClientOptions, 'signTransaction'> & {
+  publicKey: string
+  /** Wallet kit module ID, so clients are keyed per wallet as well as per address. */
+  walletId: string
+}
 
 type AnyClient = contract.Client & Record<string, (args?: any) => Promise<contract.AssembledTransaction<any>>>
 
+/**
+ * Cache lifetime: one client per (wallet ID, public key), kept until the
+ * wallet disconnects. A client captures the wallet's `signTransaction` closure
+ * when it is created, so a stale entry would sign with an old signer. The
+ * wallet provider calls `clearClientCache()` on disconnect.
+ */
 const clients = new Map<string, Promise<AnyClient>>()
+
+/** Drop every cached client so the next call builds one with the current signer. */
+export function clearClientCache(): void {
+  clients.clear()
+}
 
 function assertConfigured() {
   if (!isContractConfigured) {
@@ -158,7 +173,7 @@ function assertConfigured() {
 
 async function getClient(signer?: Signer): Promise<AnyClient> {
   assertConfigured()
-  const key = signer?.publicKey ?? '__read__'
+  const key = signer ? `${signer.walletId}:${signer.publicKey}` : '__read__'
   if (!clients.has(key)) {
     clients.set(
       key,
