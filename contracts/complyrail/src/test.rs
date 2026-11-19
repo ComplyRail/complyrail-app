@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, Event, String,
 };
 
 struct Setup<'a> {
@@ -248,6 +248,10 @@ fn above_threshold_full_flow() {
         .try_submit_attestation(&id, &key(&t.env, 8), &s(&t.env, "x"));
     assert_eq!(r, Err(Ok(Error::AttestationAlreadySubmitted)));
 
+    // beneficiary must acknowledge before releasing
+    let r = t.client.try_release_payment(&id, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::AttestationNotAcknowledged)));
+    t.client.acknowledge_attestation(&id);
     t.client.release_payment(&id, &t.vasp_b);
     let p = t.client.get_payment(&id);
     assert_eq!(p.status, PaymentStatus::Released);
@@ -256,6 +260,348 @@ fn above_threshold_full_flow() {
     assert_eq!(p.resolved_at, Some(1_000));
     assert_eq!(t.token.balance(&t.beneficiary), 5_000);
     assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn acknowledge_requires_attestation_and_beneficiary_auth() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    // nothing to acknowledge yet
+    assert_eq!(
+        t.client.try_acknowledge_attestation(&id),
+        Err(Ok(Error::AttestationRequired))
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    assert!(t.client.get_payment(&id).acknowledged_at.is_some());
+    assert_eq!(
+        t.client.try_acknowledge_attestation(&id),
+        Err(Ok(Error::AlreadyAcknowledged))
+    );
+}
+
+#[test]
+fn acknowledge_is_signed_by_beneficiary_vasp() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    // the only required signer must be the beneficiary VASP, not the originator
+    let (signer, _) = t.env.auths().first().cloned().expect("auth recorded");
+    assert_eq!(signer, t.vasp_b);
+}
+
+#[test]
+fn amend_replaces_attestation_and_keeps_old_hash_in_event() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.env.ledger().set_timestamp(1_500);
+    t.client
+        .amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025"));
+    // capture events of the amend call before any further contract call
+    let events = t.env.events().all();
+
+    let contract = t.client.address.clone();
+    let amended = AttestationAmended {
+        id,
+        old_hash: key(&t.env, 7),
+        new_hash: key(&t.env, 9),
+        ivms_version: s(&t.env, "IVMS101.2025"),
+    };
+    assert!(events.events().contains(&amended.to_xdr(&t.env, &contract)));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 9)));
+    assert_eq!(p.ivms_version, Some(s(&t.env, "IVMS101.2025")));
+    assert_eq!(p.attested_at, Some(1_500));
+    assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+#[test]
+fn amend_requires_existing_attestation() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(
+        t.client
+            .try_amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025")),
+        Err(Ok(Error::AttestationRequired))
+    );
+}
+
+#[test]
+fn amend_is_blocked_after_acknowledgement() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    assert_eq!(
+        t.client
+            .try_amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025")),
+        Err(Ok(Error::AlreadyAcknowledged))
+    );
+    // the acknowledged hash is unchanged
+    assert_eq!(
+        t.client.get_payment(&id).attestation_hash,
+        Some(key(&t.env, 7))
+    );
+}
+
+#[test]
+fn amend_is_signed_by_originator() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client
+        .amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025"));
+    let (signer, _) = t.env.auths().first().cloned().expect("auth recorded");
+    assert_eq!(signer, t.vasp_a);
+}
+
+#[test]
+fn query_moves_pending_to_queried_and_blocks_release() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client
+        .query_payment(&id, &s(&t.env, "originator name missing"));
+
+    let contract = t.client.address.clone();
+    let queried = PaymentQueried {
+        id,
+        reason: s(&t.env, "originator name missing"),
+    };
+    assert!(t
+        .env
+        .events()
+        .all()
+        .events()
+        .contains(&queried.to_xdr(&t.env, &contract)));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Queried);
+
+    // a queried payment cannot be released until it is amended
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.admin),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn query_only_from_pending_and_not_after_ack() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    assert_eq!(
+        t.client.try_query_payment(&id, &s(&t.env, "late query")),
+        Err(Ok(Error::AlreadyAcknowledged))
+    );
+    // the acknowledged payment is still Pending: the query was refused
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+}
+
+#[test]
+fn query_twice_is_rejected() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "first"));
+    assert_eq!(
+        t.client.try_query_payment(&id, &s(&t.env, "second")),
+        Err(Ok(Error::PaymentNotPending))
+    );
+}
+
+#[test]
+fn originator_amends_queried_payment_back_to_pending() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "wrong payload"));
+    t.client
+        .amend_attestation(&id, &key(&t.env, 9), &s(&t.env, "IVMS101.2025"));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Pending);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 9)));
+
+    // the corrected attestation can now be acknowledged and released
+    t.client.acknowledge_attestation(&id);
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn beneficiary_can_reject_queried_payment() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "unclear"));
+    t.client
+        .reject_payment(&id, &t.vasp_b, &s(&t.env, "giving up"));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn queried_payment_can_be_reclaimed_after_expiry() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "unclear"));
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+}
+
+#[test]
+fn query_is_signed_by_beneficiary_vasp() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.query_payment(&id, &s(&t.env, "unclear"));
+    let (signer, _) = t.env.auths().first().cloned().expect("auth recorded");
+    assert_eq!(signer, t.vasp_b);
+}
+
+#[test]
+fn release_fails_if_beneficiary_vasp_suspended_after_submit() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+
+    let r = t.client.try_release_payment(&id, &t.vasp_b);
+    assert_eq!(r, Err(Ok(Error::VaspNotActive)));
+    // admin override does not bypass the beneficiary status check
+    let r = t.client.try_release_payment(&id, &t.admin);
+    assert_eq!(r, Err(Ok(Error::VaspNotActive)));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn release_fails_if_beneficiary_vasp_revoked_or_expired() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.set_vasp_expiry(&t.vasp_b, &Some(2_000));
+    t.env.ledger().set_timestamp(2_000);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::VaspNotActive))
+    );
 }
 
 #[test]
@@ -301,6 +647,61 @@ fn admin_can_release_and_outsider_cannot() {
     );
     t.client.release_payment(&id, &t.admin);
     assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn admin_override_without_ack_is_logged() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.admin);
+
+    let contract = t.client.address.clone();
+    let expected = AcknowledgementOverridden {
+        id,
+        admin: t.admin.clone(),
+    };
+    assert!(t
+        .env
+        .events()
+        .all()
+        .events()
+        .contains(&expected.to_xdr(&t.env, &contract)));
+}
+
+#[test]
+fn admin_release_after_ack_is_not_an_override() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.acknowledge_attestation(&id);
+    t.client.release_payment(&id, &t.admin);
+
+    let contract = t.client.address.clone();
+    let override_evt = AcknowledgementOverridden {
+        id,
+        admin: t.admin.clone(),
+    };
+    assert!(!t
+        .env
+        .events()
+        .all()
+        .events()
+        .contains(&override_evt.to_xdr(&t.env, &contract)));
 }
 
 #[test]
