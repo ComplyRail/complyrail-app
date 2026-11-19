@@ -58,6 +58,7 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    NoPendingAdmin = 15,
 }
 
 #[contracttype]
@@ -117,6 +118,8 @@ pub struct Payment {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    /// Admin proposed by `propose_admin`, not yet accepted.
+    PendingAdmin,
     PaymentTtl,
     NextPaymentId,
     VaspList,
@@ -355,6 +358,19 @@ pub struct PaymentReleased {
     pub amount: i128,
 }
 
+#[contractevent(topics = ["adm_prop"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    pub proposed: Address,
+}
+
+#[contractevent(topics = ["adm_acc"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    pub previous: Address,
+    pub new_admin: Address,
+}
+
 #[contractevent(topics = ["pay_rej"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentRejected {
@@ -390,13 +406,61 @@ impl ComplyRail {
         admin(&env)
     }
 
-    /// Hand admin rights to a new address (both must sign).
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+    /// Step 1 of a handover: the current admin proposes `new_admin`. Replaces
+    /// any earlier proposal and changes nothing until `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         require_admin(&env)?;
-        new_admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        bump_instance(&env);
+        AdminProposed {
+            proposed: new_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Step 2: the proposed admin accepts. `caller` must be the proposed
+    /// address and must sign; any other address gets `Unauthorized`.
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        if caller != pending {
+            return Err(Error::Unauthorized);
+        }
+        let previous = admin(&env)?;
+        let s = env.storage().instance();
+        s.set(&DataKey::Admin, &pending);
+        s.remove(&DataKey::PendingAdmin);
+        bump_instance(&env);
+        AdminAccepted {
+            previous,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Current admin withdraws the pending proposal.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        require_admin(&env)?;
+        let s = env.storage().instance();
+        if !s.has(&DataKey::PendingAdmin) {
+            return Err(Error::NoPendingAdmin);
+        }
+        s.remove(&DataKey::PendingAdmin);
         bump_instance(&env);
         Ok(())
+    }
+
+    /// The proposed admin awaiting `accept_admin`, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     // ----- VASP registry ---------------------------------------------------

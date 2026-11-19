@@ -97,11 +97,79 @@ fn constructor_respects_custom_ttl() {
 }
 
 #[test]
-fn transfer_admin_works() {
+fn two_step_admin_handover() {
     let t = setup();
     let new_admin = Address::generate(&t.env);
-    t.client.transfer_admin(&new_admin);
+    t.client.propose_admin(&new_admin);
+    // nothing changes until the proposed admin accepts
+    assert_eq!(t.client.admin(), t.admin);
+    assert_eq!(t.client.pending_admin(), Some(new_admin.clone()));
+    t.client.accept_admin(&new_admin);
     assert_eq!(t.client.admin(), new_admin);
+    assert_eq!(t.client.pending_admin(), None);
+}
+
+#[test]
+fn accept_from_wrong_address_fails() {
+    let t = setup();
+    let new_admin = Address::generate(&t.env);
+    let outsider = Address::generate(&t.env);
+    t.client.propose_admin(&new_admin);
+    let r = t.client.try_accept_admin(&outsider);
+    assert_eq!(r, Err(Ok(Error::Unauthorized)));
+    assert_eq!(t.client.admin(), t.admin);
+    assert_eq!(t.client.pending_admin(), Some(new_admin));
+}
+
+#[test]
+fn accept_without_proposal_fails() {
+    let t = setup();
+    let r = t.client.try_accept_admin(&t.vasp_a);
+    assert_eq!(r, Err(Ok(Error::NoPendingAdmin)));
+}
+
+#[test]
+fn cancel_proposal_blocks_accept() {
+    let t = setup();
+    let new_admin = Address::generate(&t.env);
+    t.client.propose_admin(&new_admin);
+    t.client.cancel_admin_proposal();
+    assert_eq!(t.client.pending_admin(), None);
+    let r = t.client.try_accept_admin(&new_admin);
+    assert_eq!(r, Err(Ok(Error::NoPendingAdmin)));
+    assert_eq!(t.client.admin(), t.admin);
+}
+
+#[test]
+fn cancel_without_proposal_fails() {
+    let t = setup();
+    let r = t.client.try_cancel_admin_proposal();
+    assert_eq!(r, Err(Ok(Error::NoPendingAdmin)));
+}
+
+#[test]
+fn re_proposing_replaces_the_earlier_candidate() {
+    let t = setup();
+    let first = Address::generate(&t.env);
+    let second = Address::generate(&t.env);
+    t.client.propose_admin(&first);
+    t.client.propose_admin(&second);
+    assert_eq!(t.client.pending_admin(), Some(second.clone()));
+    let r = t.client.try_accept_admin(&first);
+    assert_eq!(r, Err(Ok(Error::Unauthorized)));
+    t.client.accept_admin(&second);
+    assert_eq!(t.client.admin(), second);
+}
+
+#[test]
+#[should_panic]
+fn propose_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    // no mock_all_auths(): the admin has not signed
+    let client = ComplyRailClient::new(&env, &id);
+    client.propose_admin(&Address::generate(&env));
 }
 
 // ----- registry ------------------------------------------------------------

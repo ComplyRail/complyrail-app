@@ -194,6 +194,11 @@ export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
 
+/** Address proposed by `propose_admin` and not yet accepted, if any. */
+export async function getPendingAdmin(): Promise<string | null> {
+  return (await read<string | null | undefined>('pending_admin')) ?? null
+}
+
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
   const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))
@@ -326,6 +331,23 @@ export function setVaspExpiry(signer: Signer, address: string, expiresAt?: numbe
     address,
     expires_at: expiresAt === undefined ? undefined : BigInt(expiresAt),
   })
+}
+
+// ----- admin handover (two steps) -------------------------------------------
+
+/** Step 1, signed by the current admin. */
+export function proposeAdmin(signer: Signer, newAdmin: string) {
+  return write<void>(signer, 'propose_admin', { new_admin: newAdmin })
+}
+
+/** Step 2, signed by the proposed admin. */
+export function acceptAdmin(signer: Signer) {
+  return write<void>(signer, 'accept_admin', { caller: signer.publicKey })
+}
+
+/** Signed by the current admin to withdraw a pending proposal. */
+export function cancelAdminProposal(signer: Signer) {
+  return write<void>(signer, 'cancel_admin_proposal', {})
 }
 
 export function setThreshold(signer: Signer, asset: string, jurisdiction: string, amount: bigint) {

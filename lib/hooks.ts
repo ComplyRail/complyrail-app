@@ -120,7 +120,12 @@ export function useAuditEvents() {
 
 export function useAdmin() {
   const q = useContractQuery<string | null>(api.getAdmin, null, 'admin')
-  return { admin: q.data, loading: q.loading, error: q.error }
+  return { admin: q.data, loading: q.loading, error: q.error, reload: q.reload }
+}
+
+export function usePendingAdmin() {
+  const q = useContractQuery<string | null>(api.getPendingAdmin, null, 'pending-admin')
+  return { pendingAdmin: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
 /** Role of the connected wallet, derived from on-chain state. */

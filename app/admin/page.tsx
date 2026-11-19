@@ -1,14 +1,18 @@
 'use client'
 
 import Link from 'next/link'
+import { useState } from 'react'
 import deployment from '../../contracts/deployments/testnet.json'
-import { ExplorerLink } from '@/components/Notice'
+import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
-import { useAdmin, usePayments, useVasps } from '@/lib/hooks'
+import { useAdmin, usePayments, usePendingAdmin, useVasps } from '@/lib/hooks'
 import { config, isContractConfigured } from '@/lib/config'
+import { acceptAdmin, cancelAdminProposal, proposeAdmin } from '@/lib/contract'
+
+const STELLAR_ADDRESS = /^G[A-Z2-7]{55}$/
 
 export default function ContractPage() {
-  const { admin, loading } = useAdmin()
+  const { admin, loading, reload: reloadAdmin } = useAdmin()
   const { vasps } = useVasps()
   const { total: paymentTotal } = usePayments()
   const { address } = useWallet()
@@ -55,6 +59,8 @@ export default function ContractPage() {
           </div>
         )}
 
+        {isContractConfigured && <TransferAdminCard admin={admin} onAdminChanged={reloadAdmin} />}
+
         <div className="bg-card border border-border rounded-lg p-6 text-sm space-y-2">
           <h2 className="text-lg font-semibold">Admin tasks</h2>
           <p className="text-muted-foreground">Connect the admin wallet, then:</p>
@@ -65,6 +71,94 @@ export default function ContractPage() {
           </ul>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Two-step admin handover: the admin proposes, then the proposed address
+ * accepts from its own wallet. Either step can be run separately.
+ */
+function TransferAdminCard({ admin, onAdminChanged }: { admin: string | null; onAdminChanged: () => void }) {
+  const { address } = useWallet()
+  const { pendingAdmin, reload: reloadPending } = usePendingAdmin()
+  const tx = useTx()
+  const [newAdmin, setNewAdmin] = useState('')
+  const [addressError, setAddressError] = useState<string | null>(null)
+  const isAdmin = !!address && address === admin
+  const isPending = !!address && address === pendingAdmin
+
+  const propose = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const target = newAdmin.trim()
+    if (!STELLAR_ADDRESS.test(target)) {
+      setAddressError('Enter a Stellar public key (G…, 56 characters).')
+      return
+    }
+    setAddressError(null)
+    const ok = await tx.run('Admin transfer proposed', s => proposeAdmin(s, target).then(() => true))
+    if (ok) {
+      setNewAdmin('')
+      reloadPending()
+    }
+  }
+
+  const cancel = async () => {
+    const ok = await tx.run('Admin proposal cancelled', s => cancelAdminProposal(s).then(() => true))
+    if (ok) reloadPending()
+  }
+
+  const accept = async () => {
+    const ok = await tx.run('Admin role accepted', s => acceptAdmin(s).then(() => true))
+    if (ok) {
+      reloadPending()
+      onAdminChanged()
+    }
+  }
+
+  return (
+    <div className="bg-card border border-border rounded-lg p-6 text-sm space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold">Transfer admin</h2>
+        <p className="text-muted-foreground">
+          The current admin proposes a new address; that address then accepts from its own wallet.
+        </p>
+      </div>
+
+      {pendingAdmin ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <span>Pending admin:</span>
+          <ExplorerLink kind="account" id={pendingAdmin} />
+          {isAdmin && (
+            <button onClick={cancel} disabled={tx.pending}
+              className="px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50">
+              Cancel proposal
+            </button>
+          )}
+          {isPending && (
+            <button onClick={accept} disabled={tx.pending}
+              className="px-3 py-1 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50">
+              Accept admin role
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="text-muted-foreground">No pending proposal.</p>
+      )}
+
+      {isAdmin && (
+        <form onSubmit={propose} className="flex flex-col gap-2 sm:flex-row">
+          <input required value={newAdmin} onChange={e => setNewAdmin(e.target.value)}
+            placeholder="New admin address (G…)" aria-label="New admin address"
+            className="flex-1 px-3 py-2 border border-border rounded bg-background font-mono" />
+          <button type="submit" disabled={tx.pending}
+            className="px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50">
+            {tx.pending ? 'Submitting…' : pendingAdmin ? 'Replace proposal' : 'Propose new admin'}
+          </button>
+        </form>
+      )}
+      {addressError && <p className="text-sm text-red-600">{addressError}</p>}
+      <TxStatus {...tx} />
     </div>
   )
 }
