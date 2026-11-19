@@ -33,6 +33,8 @@ mod test;
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
+/// Stellar closes a ledger roughly every 5 seconds.
+const LEDGER_SECONDS: u64 = 5;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 
@@ -132,16 +134,42 @@ pub struct ComplyRail;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// How many ledgers a held payment must stay live after its last write:
+/// the configured `payment_ttl` (so the originator can always reach the
+/// reclaim window) plus the usual 30-day buffer. Never less than `BUMP_AMOUNT`.
+fn payment_bump_amount(env: &Env) -> u32 {
+    let ttl_secs: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::PaymentTtl)
+        .unwrap_or(DEFAULT_PAYMENT_TTL);
+    let ttl_ledgers = ttl_secs / LEDGER_SECONDS + 1;
+    let total = ttl_ledgers.saturating_add(u64::from(BUMP_AMOUNT));
+    u32::try_from(total).unwrap_or(u32::MAX).max(BUMP_AMOUNT)
+}
+
+/// The contract instance holds the TTL config and VASP list, so it must
+/// outlive every payment; it is extended to the same horizon.
 fn bump_instance(env: &Env) {
+    let amount = payment_bump_amount(env);
     env.storage()
         .instance()
-        .extend_ttl(BUMP_THRESHOLD, BUMP_AMOUNT);
+        .extend_ttl(amount - DAY_IN_LEDGERS, amount);
 }
 
 fn bump_persistent(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, BUMP_THRESHOLD, BUMP_AMOUNT);
+}
+
+/// Payments are bumped to `payment_bump_amount` so an untouched Pending
+/// payment is never archived before its reclaim window opens.
+fn bump_payment(env: &Env, key: &DataKey) {
+    let amount = payment_bump_amount(env);
+    env.storage()
+        .persistent()
+        .extend_ttl(key, amount - DAY_IN_LEDGERS, amount);
 }
 
 fn admin(env: &Env) -> Result<Address, Error> {
@@ -199,14 +227,14 @@ fn load_payment(env: &Env, id: u64) -> Result<Payment, Error> {
         .persistent()
         .get(&key)
         .ok_or(Error::PaymentNotFound)?;
-    bump_persistent(env, &key);
+    bump_payment(env, &key);
     Ok(p)
 }
 
 fn save_payment(env: &Env, p: &Payment) {
     let key = DataKey::Payment(p.id);
     env.storage().persistent().set(&key, p);
-    bump_persistent(env, &key);
+    bump_payment(env, &key);
 }
 
 fn require_pending(p: &Payment) -> Result<(), Error> {

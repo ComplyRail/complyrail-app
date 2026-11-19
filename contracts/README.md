@@ -52,6 +52,18 @@ A held payment has one window per party, and they never overlap:
 
 The boundary is inclusive for reclaim: at exactly `expires_at` the originator can reclaim and the beneficiary can no longer release. Whichever transaction lands first can therefore never race the other.
 
+### Storage lifetime (escrow must not be archived)
+
+Soroban archives a persistent entry once its TTL runs out, so an untouched held payment must stay live until its reclaim window opens. Every write and every load of a payment, and every instance write, extends its TTL to:
+
+`payment_ttl` (ledgers, at 5 s per ledger) + 30 days buffer
+
+| Setting | Before | Now (default 7-day TTL) | Now (60-day TTL) |
+|---|---|---|---|
+| Untouched Pending payment survives, from last write | 30 days, whatever `payment_ttl` is | about 37 days | about 90 days |
+
+The old fixed 30-day horizon was enough for the 7-day default, but any `payment_ttl` above 30 days let an untouched payment be archived before the originator could reclaim it. The contract instance (TTL config and VASP list) uses the same horizon so it never expires before the payments it governs. The horizon is still capped by the network's maximum entry TTL.
+
 Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
 
 ## Develop
