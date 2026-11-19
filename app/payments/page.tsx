@@ -6,6 +6,7 @@ import { StatusBadge } from '@/components/StatusBadge'
 import { assetSymbol } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
 import { PaymentStatus } from '@/lib/types'
+import { ResponsiveTable } from '@/components/ResponsiveTable'
 
 export default function PaymentsPage() {
   const { payments, loading, error } = usePayments()
@@ -42,38 +43,20 @@ export default function PaymentsPage() {
         ) : payments.length === 0 ? (
           <div className="text-center text-muted-foreground py-12">No payments yet</div>
         ) : (
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50">
-                    <th className="px-6 py-3 text-left text-sm font-semibold">#</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">From VASP</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">To VASP</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Amount</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Status</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Created</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payments.map(p => (
-                    <tr key={p.id} className="border-b border-border hover:bg-muted/50">
-                      <td className="px-6 py-4 font-mono text-sm">
-                        <Link href={`/payments/view?id=${p.id}`} className="text-primary hover:underline">#{p.id}</Link>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-sm">{formatAddress(p.fromVasp)}</td>
-                      <td className="px-6 py-4 font-mono text-sm">{formatAddress(p.toVasp)}</td>
-                      <td className="px-6 py-4 font-mono">{fromUnits(p.amount)} {assetSymbol(p.asset)}</td>
-                      <td className="px-6 py-4"><StatusBadge status={p.status} type="payment" /></td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {new Date(p.createdAt * 1000).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <ResponsiveTable
+            rows={payments}
+            rowKey={p => p.id}
+            columns={[
+              { header: '#', className: 'font-mono text-sm', cell: p => (
+                <Link href={`/payments/view?id=${p.id}`} className="text-primary hover:underline">#{p.id}</Link>
+              ) },
+              { header: 'From VASP', className: 'font-mono text-sm', cell: p => formatAddress(p.fromVasp) },
+              { header: 'To VASP', className: 'font-mono text-sm', cell: p => formatAddress(p.toVasp) },
+              { header: 'Amount', className: 'font-mono', cell: p => <>{fromUnits(p.amount)} {assetSymbol(p.asset)}</> },
+              { header: 'Status', cell: p => <StatusBadge status={p.status} type="payment" /> },
+              { header: 'Created', className: 'text-sm text-muted-foreground', cell: p => new Date(p.createdAt * 1000).toLocaleString() },
+            ]}
+          />
         )}
       </div>
     </div>
