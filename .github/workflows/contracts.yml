@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: wasm32v1-none
           components: rustfmt, clippy
@@ -30,9 +30,53 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Advisories
+        run: cargo deny check advisories
       - uses: stellar/stellar-cli@v30.0.1
       - name: Build WASM
         run: stellar contract build
+      - name: WASM size budget
+        env:
+          MAX_GROWTH_PERCENT: 5
+        run: |
+          WASM=target/wasm32v1-none/release/complyrail.wasm
+          SIZE=$(stat -c %s "$WASM")
+          BASELINE=$(tr -d '[:space:]' < wasm-size-baseline.txt)
+          LIMIT=$(( BASELINE * (100 + MAX_GROWTH_PERCENT) / 100 ))
+          {
+            echo "### WASM size"
+            echo ""
+            echo "| Build | Bytes |"
+            echo "|---|---|"
+            echo "| This commit | $SIZE |"
+            echo "| Baseline (wasm-size-baseline.txt) | $BASELINE |"
+            echo "| Limit (+${MAX_GROWTH_PERCENT}%) | $LIMIT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "::error::WASM grew to $SIZE bytes, over the limit of $LIMIT. See the update procedure in contracts/README.md."
+            exit 1
+          fi
+      - name: Reproducible build check
+        run: |
+          WASM=target/wasm32v1-none/release/complyrail.wasm
+          FIRST=$(sha256sum "$WASM" | cut -d' ' -f1)
+          # Second build from a clean target directory, so nothing is reused
+          rm -rf target
+          stellar contract build
+          SECOND=$(sha256sum "$WASM" | cut -d' ' -f1)
+          {
+            echo "### Reproducible build"
+            echo ""
+            echo "- Build 1: \`$FIRST\`"
+            echo "- Build 2 (clean target): \`$SECOND\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FIRST" != "$SECOND" ]; then
+            echo "::error::Two builds of the same commit produced different WASM"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: complyrail-wasm
