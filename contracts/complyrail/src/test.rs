@@ -378,3 +378,81 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- fee-on-transfer tokens (issue #21) ----------------------------------
+
+/// Minimal SEP-41-style token that keeps 10% of every transfer, so the
+/// recipient receives less than `amount`.
+#[contract]
+pub struct FeeToken;
+
+#[contracttype]
+#[derive(Clone)]
+enum FeeKey {
+    Balance(Address),
+}
+
+#[contractimpl]
+impl FeeToken {
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let k = FeeKey::Balance(to);
+        let b: i128 = env.storage().persistent().get(&k).unwrap_or(0);
+        env.storage().persistent().set(&k, &(b + amount));
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&FeeKey::Balance(id))
+            .unwrap_or(0)
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        let fee = amount / 10;
+        let from_bal = Self::balance(env.clone(), from.clone());
+        env.storage()
+            .persistent()
+            .set(&FeeKey::Balance(from), &(from_bal - amount));
+        let to_bal = Self::balance(env.clone(), to.clone());
+        env.storage()
+            .persistent()
+            .set(&FeeKey::Balance(to), &(to_bal + amount - fee));
+    }
+}
+
+#[test]
+fn fee_on_transfer_asset_is_rejected() {
+    let t = setup();
+    let fee_id = t.env.register(FeeToken, ());
+    let fee = FeeTokenClient::new(&t.env, &fee_id);
+    fee.mint(&t.vasp_a, &1_000);
+
+    // 100 requested, 90 arrives: the escrow would be under-collateralised.
+    let r = t
+        .client
+        .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &fee_id, &100);
+    assert_eq!(r, Err(Ok(Error::ReceivedAmountMismatch)));
+
+    // The failed call must leave no trace: originator keeps its funds and
+    // no payment was recorded.
+    assert_eq!(fee.balance(&t.vasp_a), 1_000);
+    assert_eq!(fee.balance(&t.client.address), 0);
+    assert_eq!(t.client.payment_count(), 0);
+}
+
+#[test]
+fn exact_transfer_asset_still_accepted() {
+    let t = setup();
+    // The standard Stellar asset delivers the full amount, so the balance
+    // delta check passes and escrow holds exactly what was requested.
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(t.client.get_payment(&id).amount, 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 5_000);
+}

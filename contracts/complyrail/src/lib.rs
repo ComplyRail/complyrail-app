@@ -55,6 +55,9 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// The contract received a different amount than the one requested,
+    /// e.g. the token charges a transfer fee.
+    ReceivedAmountMismatch = 15,
 }
 
 #[contracttype]
@@ -491,11 +494,17 @@ impl ComplyRail {
         let origin = require_active_vasp(&env, &from_vasp)?;
         require_active_vasp(&env, &to_vasp)?;
 
-        token::Client::new(&env, &asset).transfer(
-            &from_vasp,
-            env.current_contract_address(),
-            &amount,
-        );
+        // Escrow is only safe if the contract really holds `amount` more
+        // afterwards. Fee-on-transfer tokens deliver less, so measure the
+        // balance delta and reject any mismatch (the error reverts the call).
+        let token = token::Client::new(&env, &asset);
+        let me = env.current_contract_address();
+        let balance_before = token.balance(&me);
+        token.transfer(&from_vasp, &me, &amount);
+        let received = token.balance(&me) - balance_before;
+        if received != amount {
+            return Err(Error::ReceivedAmountMismatch);
+        }
 
         let s = env.storage().instance();
         let id: u64 = s.get(&DataKey::NextPaymentId).unwrap_or(0);
