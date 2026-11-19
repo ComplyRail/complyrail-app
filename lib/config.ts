@@ -16,7 +16,20 @@ export const config = {
 
 export const isContractConfigured = /^C[A-Z2-7]{55}$/.test(config.contractId)
 
-export const explorerBase = 'https://stellar.expert/explorer/testnet'
+/** Block explorer base URL for each network passphrase we know how to link to. */
+const EXPLORER_BASES: Record<string, string> = {
+  [Networks.TESTNET]: 'https://stellar.expert/explorer/testnet',
+  [Networks.PUBLIC]: 'https://stellar.expert/explorer/public',
+}
+
+/** Explorer base for a passphrase, or null when the network is unknown. */
+export function explorerBaseFor(networkPassphrase: string): string | null {
+  return Object.prototype.hasOwnProperty.call(EXPLORER_BASES, networkPassphrase)
+    ? EXPLORER_BASES[networkPassphrase]
+    : null
+}
+
+export const explorerBase = explorerBaseFor(config.networkPassphrase)
 
 /** All Stellar assets use 7 decimal places. */
 export const ASSET_DECIMALS = 7
