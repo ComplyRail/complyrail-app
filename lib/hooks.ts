@@ -81,17 +81,17 @@ export function useAdmin() {
   return { admin: q.data, loading: q.loading, error: q.error }
 }
 
+/** Role of a wallet, derived from on-chain state. */
+export async function fetchRole(address?: string): Promise<Role> {
+  if (!address) return 'viewer'
+  if ((await api.getAdmin()) === address) return 'admin'
+  const vasp = await api.getVasp(address)
+  if (!vasp) return 'viewer'
+  return (await api.isVaspActive(address)) ? 'vasp' : 'inactive-vasp'
+}
+
 /** Role of the connected wallet, derived from on-chain state. */
 export function useRole(address?: string): { role: Role; loading: boolean } {
-  const q = useContractQuery<Role>(
-    async () => {
-      if (!address) return 'viewer'
-      if ((await api.getAdmin()) === address) return 'admin'
-      const vasp = await api.getVasp(address)
-      return vasp ? 'vasp' : 'viewer'
-    },
-    'viewer',
-    `role:${address ?? ''}`,
-  )
+  const q = useContractQuery<Role>(() => fetchRole(address), 'viewer', `role:${address ?? ''}`)
   return { role: q.data, loading: q.loading }
 }

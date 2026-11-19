@@ -194,6 +194,11 @@ export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
 
+/** On-chain check: registered, `Active` and not expired (contract `is_vasp_active`). */
+export async function isVaspActive(address: string): Promise<boolean> {
+  return read<boolean>('is_vasp_active', { address })
+}
+
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
   const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))

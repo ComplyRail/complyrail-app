@@ -24,6 +24,13 @@ describe('RBAC', () => {
       expect(vaspPerms.canReleasePayment).toBe(false)
     })
 
+    it('inactive-vasp role should not be able to submit or attest payments', () => {
+      const inactive = rolePermissions['inactive-vasp']
+      expect(inactive.canSubmitPayment).toBe(false)
+      expect(inactive.canSubmitAttestation).toBe(false)
+      expect(inactive.canRegisterVasp).toBe(false)
+    })
+
     it('viewer role should be read-only', () => {
       const viewerPerms = rolePermissions.viewer
       expect(viewerPerms.canRegisterVasp).toBe(false)
