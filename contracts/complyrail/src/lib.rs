@@ -46,8 +46,10 @@ const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// Reserved (unused since setup moved to the constructor).
+    /// Retired (code 1 is reserved and must never be reused). Setup moved to
+    /// the constructor, so this can no longer be returned.
     AlreadyInitialized = 1,
+    /// Only returned if the constructor never ran. Unreachable after deployment.
     NotInitialized = 2,
     VaspAlreadyRegistered = 3,
     VaspNotFound = 4,

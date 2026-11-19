@@ -43,6 +43,27 @@ originator VASP                     contract                      beneficiary VA
 
 Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
 
+## Error codes
+
+The dashboard maps these numbers, so they are stable. Never renumber a code, and never reuse a retired one.
+
+| Code | Variant | Status | Meaning |
+|---|---|---|---|
+| 1 | `AlreadyInitialized` | **reserved (retired)** | Setup moved to the constructor. Cannot be returned. |
+| 2 | `NotInitialized` | active | Constructor never ran. Unreachable after deployment. |
+| 3 | `VaspAlreadyRegistered` | active | VASP address is already in the registry. |
+| 4 | `VaspNotFound` | active | No VASP registered at this address. |
+| 5 | `VaspNotActive` | active | VASP is suspended, revoked or expired. |
+| 6 | `InvalidAmount` | active | Payment amount is not positive. |
+| 7 | `PaymentNotFound` | active | No payment with this id. |
+| 8 | `PaymentNotPending` | active | Payment is already released, rejected or reclaimed. |
+| 9 | `AttestationRequired` | active | Payment is at or above threshold and has no attestation yet. |
+| 10 | `AttestationAlreadySubmitted` | active | Payment already has an attestation. |
+| 11 | `Unauthorized` | active | Caller is neither the beneficiary VASP nor the admin. |
+| 12 | `PaymentNotExpired` | active | Payment cannot be reclaimed before `expires_at`. |
+| 13 | `SameVasp` | active | Originator and beneficiary VASP are the same. |
+| 14 | `InvalidThreshold` | active | Threshold is negative or above `i64::MAX`. |
+
 ## Develop
 
 ```bash
