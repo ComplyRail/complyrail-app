@@ -141,6 +141,98 @@ fn submit_payment_rejects_expiry_overflow() {
     assert_eq!(c.payment_count(), 0);
 }
 
+fn long(env: &Env, len: usize) -> String {
+    // no_std: slice a fixed buffer (longest limit used here is 257 bytes)
+    String::from_bytes(env, &[b'a'; 300][..len])
+}
+
+#[test]
+fn register_vasp_enforces_length_limits() {
+    let t = setup();
+    let who = Address::generate(&t.env);
+    let r = t.client.try_register_vasp(
+        &who,
+        &long(&t.env, MAX_NAME_LEN as usize + 1),
+        &s(&t.env, "US"),
+        &key(&t.env, 3),
+        &None,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+    let r = t.client.try_register_vasp(
+        &who,
+        &s(&t.env, "Name"),
+        &long(&t.env, MAX_JURISDICTION_LEN as usize + 1),
+        &key(&t.env, 3),
+        &None,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+    // exactly at the limit is accepted
+    t.client.register_vasp(
+        &who,
+        &long(&t.env, MAX_NAME_LEN as usize),
+        &long(&t.env, MAX_JURISDICTION_LEN as usize),
+        &key(&t.env, 3),
+        &None,
+    );
+    assert!(t.client.is_vasp_active(&who));
+}
+
+#[test]
+fn set_threshold_rejects_long_jurisdiction() {
+    let t = setup();
+    let r = t.client.try_set_threshold(
+        &t.token.address,
+        &long(&t.env, MAX_JURISDICTION_LEN as usize + 1),
+        &100,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn submit_attestation_enforces_ivms_version_limit() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let r = t.client.try_submit_attestation(
+        &id,
+        &key(&t.env, 7),
+        &long(&t.env, MAX_IVMS_VERSION_LEN as usize + 1),
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+    // still unattested, so a valid version can be recorded afterwards
+    t.client.submit_attestation(
+        &id,
+        &key(&t.env, 7),
+        &long(&t.env, MAX_IVMS_VERSION_LEN as usize),
+    );
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+}
+
+#[test]
+fn reject_payment_enforces_reason_limit() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let r = t
+        .client
+        .try_reject_payment(&id, &t.vasp_b, &long(&t.env, MAX_REASON_LEN as usize + 1));
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Pending);
+    t.client
+        .reject_payment(&id, &t.vasp_b, &long(&t.env, MAX_REASON_LEN as usize));
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Rejected);
+}
+
 #[test]
 fn transfer_admin_works() {
     let t = setup();

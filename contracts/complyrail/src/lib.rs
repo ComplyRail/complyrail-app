@@ -36,6 +36,14 @@ pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 /// from `u64::MAX` for any realistic ledger time.
 pub const MAX_PAYMENT_TTL: u64 = 100 * 365 * 24 * 60 * 60;
 
+/// Maximum byte lengths of free-text fields. They are stored on-chain and
+/// emitted in events, so unbounded values would raise ledger cost and break
+/// indexers. The dashboard mirrors these limits in `lib/limits.ts`.
+pub const MAX_NAME_LEN: u32 = 128;
+pub const MAX_JURISDICTION_LEN: u32 = 8;
+pub const MAX_IVMS_VERSION_LEN: u32 = 32;
+pub const MAX_REASON_LEN: u32 = 256;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -63,6 +71,8 @@ pub enum Error {
     InvalidTtl = 15,
     /// `now + ttl` does not fit in a u64.
     ExpiryOverflow = 16,
+    /// A free-text field is empty, too long or otherwise malformed.
+    InvalidInput = 17,
 }
 
 #[contracttype]
@@ -236,6 +246,14 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .unwrap_or(0)
 }
 
+/// Rejects a free-text value longer than `max` bytes.
+fn check_max_len(value: &String, max: u32) -> Result<(), Error> {
+    if value.len() > max {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
@@ -358,6 +376,8 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        check_max_len(&name, MAX_NAME_LEN)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         if env
             .storage()
             .persistent()
@@ -460,6 +480,7 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         if amount < 0 {
             return Err(Error::InvalidThreshold);
         }
@@ -560,6 +581,7 @@ impl ComplyRail {
         attestation_hash: BytesN<32>,
         ivms_version: String,
     ) -> Result<(), Error> {
+        check_max_len(&ivms_version, MAX_IVMS_VERSION_LEN)?;
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
         require_pending(&p)?;
@@ -610,6 +632,7 @@ impl ComplyRail {
         reason: String,
     ) -> Result<(), Error> {
         caller.require_auth();
+        check_max_len(&reason, MAX_REASON_LEN)?;
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {
