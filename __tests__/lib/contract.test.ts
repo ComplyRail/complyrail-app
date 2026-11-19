@@ -11,7 +11,7 @@ import {
   type RawPayment,
   type RawVasp,
 } from '@/lib/contract'
-import { PaymentStatus, VaspStatus } from '@/lib/types'
+import { IVMS101_VERSION, PaymentStatus, VaspStatus } from '@/lib/types'
 
 const G1 = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7'
 const G2 = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H'
@@ -120,6 +120,25 @@ describe('helpers', () => {
     expect(unwrap({ unwrap: () => 5 })).toBe(5)
     expect(unwrap(5)).toBe(5)
     expect(() => unwrap({ unwrap: () => { throw new Error('boom') } })).toThrow('boom')
+  })
+
+  it('uses the customer account as originator accountNumber, not the VASP address', () => {
+    const customer = 'CUST-000123'
+    const payload = buildIvmsPayload({
+      paymentId: '1', originatorName: 'Ada', originatorAccount: customer,
+      beneficiaryName: 'Bola', beneficiaryAccount: G2, amount: '10', asset: 'USDC',
+    })
+    expect(payload.originator.accountNumber).toEqual([customer])
+    expect(payload.originator.accountNumber).not.toContain(G1)
+  })
+
+  it('embeds the shared IVMS101 version constant in the payload', () => {
+    const payload = buildIvmsPayload({
+      paymentId: '1', originatorName: 'Ada', originatorAccount: G1,
+      beneficiaryName: 'Bola', beneficiaryAccount: G2, amount: '10', asset: 'USDC',
+    })
+    expect(IVMS101_VERSION).toBe('IVMS101.2023')
+    expect(payload.ivms101Version).toBe(IVMS101_VERSION)
   })
 
   it('hashes the IVMS101 payload deterministically', async () => {

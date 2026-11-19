@@ -9,6 +9,7 @@ import {
   ThresholdRow,
   VaspEntry,
   VaspStatus,
+  IVMS101_VERSION,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -333,6 +334,17 @@ export function reclaimExpired(signer: Signer, paymentId: string) {
   return write<void>(signer, 'reclaim_expired', { payment_id: BigInt(paymentId) })
 }
 
+/**
+ * Close time of the latest ledger on the RPC node, in unix seconds. Use this for
+ * expiry checks instead of the browser clock, which may be wrong.
+ */
+export async function getLedgerTime(): Promise<number> {
+  const server = new rpc.Server(config.rpcUrl)
+  const latest = (await server.getLatestLedger()).sequence
+  const res = await server.getLedgers({ startLedger: latest, pagination: { limit: 1 } })
+  return res.latestLedgerCloseTime
+}
+
 // ----- IVMS101 -------------------------------------------------------------
 
 /**
@@ -349,7 +361,7 @@ export function buildIvmsPayload(p: {
   asset: string
 }) {
   return {
-    ivms101Version: '2023',
+    ivms101Version: IVMS101_VERSION,
     paymentId: p.paymentId,
     originator: {
       originatorPersons: [{ naturalPerson: { name: { nameIdentifier: [{ primaryIdentifier: p.originatorName }] } } }],

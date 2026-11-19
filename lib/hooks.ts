@@ -42,6 +42,49 @@ function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string): Asy
   return { data, loading, error, reload }
 }
 
+const LEDGER_POLL_MS = 60_000
+
+export interface LedgerClock {
+  /** Current time in unix seconds, based on the latest ledger when available */
+  now: number
+  /** 'browser' means RPC was unavailable and the browser clock is in use */
+  source: 'ledger' | 'browser'
+  loading: boolean
+}
+
+/**
+ * Current time from the Stellar ledger, used for all expiry comparisons. Syncs
+ * with RPC on mount and every minute, and keeps the offset in between. If RPC
+ * fails, falls back to the browser clock and reports `source: 'browser'`.
+ */
+export function useLedgerClock(): LedgerClock {
+  const [offset, setOffset] = useState<number | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    const sync = () => {
+      api
+        .getLedgerTime()
+        .then(t => !cancelled && setOffset(t - Date.now() / 1000))
+        .catch(() => !cancelled && setOffset(null))
+        .finally(() => !cancelled && setLoading(false))
+    }
+    sync()
+    const id = setInterval(sync, LEDGER_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
+
+  return {
+    now: Date.now() / 1000 + (offset ?? 0),
+    source: offset === null ? 'browser' : 'ledger',
+    loading,
+  }
+}
+
 export function useVasps() {
   const q = useContractQuery<VaspEntry[]>(api.listVasps, [], 'vasps')
   return { vasps: q.data, loading: q.loading, error: q.error, reload: q.reload }
