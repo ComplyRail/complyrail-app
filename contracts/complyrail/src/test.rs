@@ -466,3 +466,88 @@ fn vasp_index_page_size_is_capped() {
         .payments_for_vasp(&t.vasp_a, &MAX_PAGE_SIZE, &u32::MAX);
     assert_eq!(tail.len(), 5);
 }
+
+// ----- pending payments index ----------------------------------------------
+
+fn submit_held(t: &Setup) -> u64 {
+    // 5_000 is above the 3_000 US threshold, so these are held.
+    t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    )
+}
+
+#[test]
+fn pending_index_holds_only_escrowed_payments() {
+    let t = setup();
+    let held = submit_held(&t);
+    // Below threshold: settles immediately and never enters the queue.
+    submit_small(&t, &t.vasp_a, &t.vasp_b);
+    let held2 = submit_held(&t);
+
+    assert_eq!(
+        t.client.list_pending(&0, &10),
+        soroban_sdk::vec![&t.env, held, held2]
+    );
+}
+
+#[test]
+fn pending_index_drops_on_release() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    // Attestation alone does not resolve the payment, so it stays queued.
+    assert_eq!(
+        t.client.list_pending(&0, &10),
+        soroban_sdk::vec![&t.env, id]
+    );
+
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.list_pending(&0, &10), soroban_sdk::vec![&t.env]);
+}
+
+#[test]
+fn pending_index_drops_on_reject() {
+    let t = setup();
+    let keep = submit_held(&t);
+    let drop = submit_held(&t);
+    t.client
+        .reject_payment(&drop, &t.vasp_b, &s(&t.env, "sanctions hit"));
+    assert_eq!(
+        t.client.list_pending(&0, &10),
+        soroban_sdk::vec![&t.env, keep]
+    );
+}
+
+#[test]
+fn pending_index_drops_on_reclaim() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.list_pending(&0, &10), soroban_sdk::vec![&t.env]);
+}
+
+#[test]
+fn pending_index_paging_and_bounds() {
+    let t = setup();
+    let mut ids = Vec::new(&t.env);
+    for _ in 0..4 {
+        ids.push_back(submit_held(&t));
+    }
+    assert_eq!(
+        t.client.list_pending(&1, &2),
+        soroban_sdk::vec![&t.env, ids.get(1).unwrap(), ids.get(2).unwrap()]
+    );
+    assert_eq!(t.client.list_pending(&4, &10), soroban_sdk::vec![&t.env]);
+    assert_eq!(t.client.list_pending(&0, &0), soroban_sdk::vec![&t.env]);
+    assert_eq!(
+        t.client.list_pending(&0, &u32::MAX).len(),
+        4,
+        "limit is clamped, not rejected"
+    );
+}

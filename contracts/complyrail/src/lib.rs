@@ -126,6 +126,8 @@ enum DataKey {
     /// Ids of every payment this VASP originated or is the recipient of, in
     /// submission order.
     VaspPayments(Address),
+    /// Ids of payments currently held in escrow, in submission order.
+    PendingPayments,
 }
 
 #[contract]
@@ -246,11 +248,56 @@ fn index_vasp_payment(env: &Env, vasp: &Address, payment_id: u64) {
     bump_persistent(env, &key);
 }
 
+fn pending_index_add(env: &Env, payment_id: u64) {
+    let key = DataKey::PendingPayments;
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(payment_id);
+    env.storage().persistent().set(&key, &ids);
+    bump_persistent(env, &key);
+}
+
+fn pending_index_remove(env: &Env, payment_id: u64) {
+    let key = DataKey::PendingPayments;
+    let Some(ids) = env.storage().persistent().get::<_, Vec<u64>>(&key) else {
+        return;
+    };
+    let mut kept = Vec::new(env);
+    for id in ids.iter() {
+        if id != payment_id {
+            kept.push_back(id);
+        }
+    }
+    env.storage().persistent().set(&key, &kept);
+    bump_persistent(env, &key);
+}
+
+/// Returns at most `min(limit, MAX_PAGE_SIZE)` entries of `ids` starting at
+/// offset `start`. An out-of-range `start` yields an empty Vec.
+fn page_of(env: &Env, ids: &Vec<u64>, start: u32, limit: u32) -> Vec<u64> {
+    let mut page = Vec::new(env);
+    let end = start
+        .saturating_add(limit.min(MAX_PAGE_SIZE))
+        .min(ids.len());
+    let mut i = start;
+    while i < end {
+        page.push_back(ids.get(i).unwrap());
+        i += 1;
+    }
+    page
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
     p.resolved_at = Some(env.ledger().timestamp());
     save_payment(env, p);
+    // Every resolution leaves the pending queue. Instantly settled payments
+    // were never in it, so this is a no-op for them.
+    pending_index_remove(env, p.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -554,6 +601,7 @@ impl ComplyRail {
 
         if requires_attestation {
             save_payment(&env, &p);
+            pending_index_add(&env, id);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released);
             PaymentReleased { id, amount }.publish(&env);
@@ -666,16 +714,18 @@ impl ComplyRail {
             .persistent()
             .get(&DataKey::VaspPayments(vasp))
             .unwrap_or_else(|| Vec::new(&env));
-        let mut page = Vec::new(&env);
-        let end = start
-            .saturating_add(limit.min(MAX_PAGE_SIZE))
-            .min(ids.len());
-        let mut i = start;
-        while i < end {
-            page.push_back(ids.get(i).unwrap());
-            i += 1;
-        }
-        page
+        page_of(&env, &ids, start, limit)
+    }
+
+    /// Payment ids currently held in escrow (awaiting attestation and/or
+    /// release), in submission order. Paged like `payments_for_vasp`.
+    pub fn list_pending(env: Env, start: u32, limit: u32) -> Vec<u64> {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingPayments)
+            .unwrap_or_else(|| Vec::new(&env));
+        page_of(&env, &ids, start, limit)
     }
 
     /// Number of payments ever submitted (ids are `0..payment_count`).
