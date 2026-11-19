@@ -195,12 +195,28 @@ async function read<T>(method: string, args?: Record<string, unknown>): Promise<
   return unwrap<T>(tx.result)
 }
 
+/** A transaction was included in a ledger but failed on-chain. Carries the hash for inspection. */
+export class TxFailedError extends Error {
+  readonly txHash: string
+
+  constructor(txHash: string) {
+    super('The transaction was included on-chain but failed.')
+    this.name = 'TxFailedError'
+    this.txHash = txHash
+  }
+}
+
 async function write<T>(signer: Signer, method: string, args: Record<string, unknown>): Promise<T> {
   const c = await getClient(signer)
   const tx = await c[method](args)
   // Surface contract errors from simulation before asking the wallet to sign.
   unwrap(tx.result)
   const sent = await tx.signAndSend()
+  // Check the final status before reading the result, so a FAILED transaction
+  // is never reported as success.
+  if (sent.getTransactionResponse?.status === rpc.Api.GetTransactionStatus.FAILED) {
+    throw new TxFailedError(sent.sendTransactionResponse?.hash ?? '')
+  }
   return unwrap<T>(sent.result)
 }
 
