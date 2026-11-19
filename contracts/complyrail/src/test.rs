@@ -278,6 +278,82 @@ fn reject_refunds_originator() {
 }
 
 #[test]
+fn admin_reject_with_attestation_refunds_originator() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client
+        .reject_payment(&id, &t.admin, &s(&t.env, "admin override"));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Rejected);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 7)));
+    assert_eq!(p.resolved_at, Some(1_000));
+    // refund goes to the originator only
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.vasp_b), 0);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn admin_reject_without_attestation_refunds_originator() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .reject_payment(&id, &t.admin, &s(&t.env, "sanctions screening hit"));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Rejected);
+    assert_eq!(p.attestation_hash, None);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.vasp_b), 0);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn admin_release_skips_beneficiary_check_but_not_attestation() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    // admin is not the beneficiary VASP, but the attestation is still required
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.admin),
+        Err(Ok(Error::AttestationRequired))
+    );
+
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&id, &t.admin);
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Released);
+    // funds go to the beneficiary address, never to the beneficiary VASP
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.vasp_b), 0);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
 fn admin_can_release_and_outsider_cannot() {
     let t = setup();
     let id = t.client.submit_payment(
