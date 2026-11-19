@@ -55,6 +55,9 @@ pub enum Error {
     PaymentNotExpired = 12,
     SameVasp = 13,
     InvalidThreshold = 14,
+    /// Jurisdiction is empty or the `"*"` wildcard, which is reserved for
+    /// threshold fallback rules and cannot name a VASP's jurisdiction.
+    InvalidJurisdiction = 15,
 }
 
 #[contracttype]
@@ -152,6 +155,16 @@ fn require_admin(env: &Env) -> Result<Address, Error> {
     let a = admin(env)?;
     a.require_auth();
     Ok(a)
+}
+
+/// A VASP's jurisdiction must name a real jurisdiction. `"*"` is reserved for
+/// the threshold fallback, so a VASP registered under it would silently take
+/// the fallback rule instead of its jurisdiction's rule.
+fn validate_jurisdiction(env: &Env, jurisdiction: &String) -> Result<(), Error> {
+    if jurisdiction.is_empty() || *jurisdiction == String::from_str(env, "*") {
+        return Err(Error::InvalidJurisdiction);
+    }
+    Ok(())
 }
 
 fn load_vasp(env: &Env, addr: &Address) -> Result<VaspEntry, Error> {
@@ -382,6 +395,7 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        validate_jurisdiction(&env, &jurisdiction)?;
         if env
             .storage()
             .persistent()
@@ -483,6 +497,7 @@ impl ComplyRail {
         jurisdiction: String,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        validate_jurisdiction(&env, &jurisdiction)?;
         let mut v = load_vasp(&env, &address)?;
         let event = VaspMetadataUpdated {
             address: address.clone(),

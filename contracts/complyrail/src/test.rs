@@ -661,3 +661,52 @@ fn update_vasp_requires_admin_auth() {
         &s(&env, "US"),
     );
 }
+
+// ----- jurisdiction validation (#48) ---------------------------------------
+
+#[test]
+fn register_rejects_wildcard_jurisdiction() {
+    let t = setup();
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Wild"),
+        &s(&t.env, "*"),
+        &key(&t.env, 9),
+        &None,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+}
+
+#[test]
+fn register_rejects_empty_jurisdiction() {
+    let t = setup();
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Nowhere"),
+        &s(&t.env, ""),
+        &key(&t.env, 9),
+        &None,
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+}
+
+#[test]
+fn update_rejects_wildcard_jurisdiction() {
+    let t = setup();
+    let r = t
+        .client
+        .try_update_vasp(&t.vasp_a, &s(&t.env, "Acme Exchange"), &s(&t.env, "*"));
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+    // rejected update leaves the entry as it was
+    assert_eq!(t.client.get_vasp(&t.vasp_a).jurisdiction, s(&t.env, "US"));
+}
+
+#[test]
+fn update_rejects_empty_jurisdiction() {
+    let t = setup();
+    let r = t
+        .client
+        .try_update_vasp(&t.vasp_a, &s(&t.env, "Acme Exchange"), &s(&t.env, ""));
+    assert_eq!(r, Err(Ok(Error::InvalidJurisdiction)));
+    assert_eq!(t.client.get_vasp(&t.vasp_a).jurisdiction, s(&t.env, "US"));
+}
