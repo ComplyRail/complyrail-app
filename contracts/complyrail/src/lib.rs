@@ -32,6 +32,12 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Largest amount a threshold may hold: the maximum supply of a classic
+/// Stellar asset, `i64::MAX` stroops. Soroban token interfaces expose no
+/// standard total-supply getter, so this is the bound used for every asset.
+/// A threshold above it could never be compared meaningfully against a payment.
+pub const MAX_THRESHOLD: i128 = i64::MAX as i128;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -449,7 +455,7 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<(), Error> {
         require_admin(&env)?;
-        if amount < 0 {
+        if !(0..=MAX_THRESHOLD).contains(&amount) {
             return Err(Error::InvalidThreshold);
         }
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());

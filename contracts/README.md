@@ -33,7 +33,7 @@ originator VASP                     contract                      beneficiary VA
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
-| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
+| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | `amount` must be `0 ..= 9223372036854775807` (`i64::MAX`, the classic Stellar asset maximum); larger values fail with `InvalidThreshold` |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |

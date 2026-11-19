@@ -204,6 +204,21 @@ fn negative_threshold_rejected() {
 }
 
 #[test]
+fn threshold_above_max_supply_rejected() {
+    let t = setup();
+    let a = &t.token.address;
+    // the classic maximum is accepted...
+    t.client.set_threshold(a, &s(&t.env, "US"), &MAX_THRESHOLD);
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "US")), MAX_THRESHOLD);
+    // ...one unit more is not, and the stored value is left unchanged
+    let r = t
+        .client
+        .try_set_threshold(a, &s(&t.env, "US"), &(MAX_THRESHOLD + 1));
+    assert_eq!(r, Err(Ok(Error::InvalidThreshold)));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "US")), MAX_THRESHOLD);
+}
+
+#[test]
 fn exact_jurisdiction_threshold_boundary() {
     // US rule is 3_000: "at or above" means 3_000 itself needs attestation.
     let t = setup();
