@@ -378,3 +378,52 @@ fn uncovered_jurisdiction_requires_attestation() {
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
 }
+
+// ----- beneficiary VASP status changes while a payment is held (#62) ------
+
+/// Submits a 5_000 payment from vasp_a to vasp_b, which is above the US
+/// threshold of 3_000, so it is held in escrow.
+fn submit_held(t: &Setup) -> u64 {
+    t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    )
+}
+
+#[test]
+fn release_settles_after_beneficiary_vasp_suspended() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    assert!(!t.client.is_vasp_active(&t.vasp_b));
+
+    // Current behaviour: release is not gated on the beneficiary VASP's status.
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn release_settles_after_beneficiary_vasp_expires() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_vasp_expiry(&t.vasp_b, &Some(2_000));
+    t.env.ledger().set_timestamp(2_000);
+    assert!(!t.client.is_vasp_active(&t.vasp_b));
+
+    // Current behaviour: release is not gated on the beneficiary VASP's expiry.
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
