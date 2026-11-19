@@ -28,18 +28,24 @@ originator VASP                     contract                      beneficiary VA
 | Function | Auth | Notes |
 |---|---|---|
 | `__constructor(admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; TTL defaults to 7 days |
-| `transfer_admin(new_admin)` | admin + new admin | |
+| `propose_admin(new_admin)` | admin | replaces any earlier proposal |
+| `accept_admin(caller)` | proposed admin | `Unauthorized` for any other address; `NoPendingAdmin` if nothing is proposed |
+| `cancel_admin_proposal()` | admin | `NoPendingAdmin` if nothing is proposed |
+| `pending_admin` | – | read |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
-| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
+| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | setting `0` drops the rule from `list_thresholds` but still answers `get_threshold` with 0 (no `"*"` fallback) |
+| `list_thresholds` | – | `(asset, jurisdiction, amount)` for every rule above 0 |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |
 | `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
+| `list_payments(start, limit)` | – | ids `start..start+limit`, ascending; `limit` capped at 50 |
+| `list_payments_by_vasp(vasp, start, limit)` | – | that VASP's payments (as originator or beneficiary), in submission order; same cap |
 
 Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
 

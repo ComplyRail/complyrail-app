@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import * as api from './contract'
+import type { PaymentPage } from './contract'
 import { isContractConfigured } from './config'
 import type { Role } from './rbac'
 import type { AuditEvent, PaymentRecord, ThresholdRow, VaspEntry } from './types'
@@ -56,9 +57,50 @@ export function useVasp(address: string) {
   return { vasp: q.data, loading: q.loading, error: q.error }
 }
 
+const EMPTY_PAGE: PaymentPage = { payments: [], nextCursor: 0, total: 0 }
+
+/** Newest-first payments, loaded one page at a time via `loadMore`. */
 export function usePayments() {
-  const q = useContractQuery<PaymentRecord[]>(() => api.listPayments(), [], 'payments')
-  return { payments: q.data, loading: q.loading, error: q.error, reload: q.reload }
+  const first = useContractQuery<PaymentPage>(() => api.listPaymentsPage(), EMPTY_PAGE, 'payments')
+  const [more, setMore] = useState<PaymentRecord[]>([])
+  const [cursor, setCursor] = useState<number | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [moreError, setMoreError] = useState<string | null>(null)
+
+  // A reload replaces the first page, so drop anything loaded after it.
+  useEffect(() => {
+    setMore([])
+    setCursor(null)
+    setMoreError(null)
+  }, [first.data])
+
+  const nextCursor = cursor ?? first.data.nextCursor
+
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true)
+    setMoreError(null)
+    try {
+      const page = await api.listPaymentsPage(nextCursor)
+      setMore(m => [...m, ...page.payments])
+      setCursor(page.nextCursor)
+    } catch (e) {
+      setMoreError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [nextCursor])
+
+  return {
+    payments: [...first.data.payments, ...more],
+    total: first.data.total ?? 0,
+    hasMore: nextCursor > 0,
+    loadMore,
+    loadingMore,
+    moreError,
+    loading: first.loading,
+    error: first.error,
+    reload: first.reload,
+  }
 }
 
 export function usePayment(paymentId: string) {
@@ -78,7 +120,12 @@ export function useAuditEvents() {
 
 export function useAdmin() {
   const q = useContractQuery<string | null>(api.getAdmin, null, 'admin')
-  return { admin: q.data, loading: q.loading, error: q.error }
+  return { admin: q.data, loading: q.loading, error: q.error, reload: q.reload }
+}
+
+export function usePendingAdmin() {
+  const q = useContractQuery<string | null>(api.getPendingAdmin, null, 'pending-admin')
+  return { pendingAdmin: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
 /** Role of the connected wallet, derived from on-chain state. */

@@ -4,7 +4,10 @@ import {
   buildIvmsPayload,
   mapEvent,
   mapPayment,
+  mapThresholds,
   mapVasp,
+  pageBounds,
+  PAYMENT_PAGE_SIZE,
   sha256Hex,
   unwrap,
   vaspStatusArg,
@@ -81,6 +84,38 @@ describe('mapPayment', () => {
     expect(p.attestationHash).toBe('01'.repeat(32))
     expect(p.ivmsVersion).toBe('IVMS101.2023')
     expect(p.resolvedAt).toBe(300)
+  })
+})
+
+describe('pageBounds', () => {
+  it('takes a full page below the cursor', () => {
+    expect(pageBounds(120)).toEqual({ start: 120 - PAYMENT_PAGE_SIZE, limit: PAYMENT_PAGE_SIZE })
+  })
+
+  it('shrinks the last page to what is left', () => {
+    expect(pageBounds(30)).toEqual({ start: 0, limit: 30 })
+  })
+
+  it('is empty once the cursor reaches zero', () => {
+    expect(pageBounds(0)).toEqual({ start: 0, limit: 0 })
+  })
+})
+
+describe('mapThresholds', () => {
+  it('converts tuples to rows and drops zero amounts', () => {
+    const rows = mapThresholds([
+      [G1, 'US', 3_000n],
+      [G1, '*', 0n],
+      [G2, 'GB', '250'],
+    ])
+    expect(rows).toEqual([
+      { asset: G1, jurisdiction: 'US', amount: 3_000n },
+      { asset: G2, jurisdiction: 'GB', amount: 250n },
+    ])
+  })
+
+  it('returns an empty list when nothing is configured', () => {
+    expect(mapThresholds([])).toEqual([])
   })
 })
 

@@ -1,5 +1,5 @@
 import { contract, rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
-import { ASSETS, JURISDICTIONS, config, isContractConfigured } from './config'
+import { config, isContractConfigured } from './config'
 import { bytesToHex, fromUnits, hexToBytes } from './format'
 import {
   AuditEvent,
@@ -194,6 +194,11 @@ export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
 
+/** Address proposed by `propose_admin` and not yet accepted, if any. */
+export async function getPendingAdmin(): Promise<string | null> {
+  return (await read<string | null | undefined>('pending_admin')) ?? null
+}
+
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
   const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))
@@ -208,11 +213,43 @@ export async function getVasp(address: string): Promise<VaspEntry | null> {
   }
 }
 
-/** Newest first, capped at `limit`. */
-export async function listPayments(limit = 100): Promise<PaymentRecord[]> {
-  const count = Number(await read<bigint>('payment_count'))
-  const ids = Array.from({ length: Math.min(count, limit) }, (_, i) => BigInt(count - 1 - i))
-  const raws = await Promise.all(ids.map(payment_id => read<RawPayment>('get_payment', { payment_id })))
+/** Must match the contract's `MAX_PAGE_SIZE`. */
+export const PAYMENT_PAGE_SIZE = 50
+
+/**
+ * Ids `[start, start + limit)` for the page of payments that sits just below
+ * `cursor` (ids `< cursor` are still unread). `cursor` 0 means nothing is left.
+ */
+export function pageBounds(cursor: number, size = PAYMENT_PAGE_SIZE): { start: number; limit: number } {
+  const start = Math.max(0, cursor - size)
+  return { start, limit: cursor - start }
+}
+
+export interface PaymentPage {
+  /** Newest first. */
+  payments: PaymentRecord[]
+  /** Pass to `listPaymentsPage` for the next (older) page; 0 when none is left. */
+  nextCursor: number
+  /** Total payments on the contract. Present on the first page only. */
+  total?: number
+}
+
+/**
+ * One page of payments, newest first. The first page (no cursor) costs two
+ * reads (`payment_count`, `list_payments`); later pages cost one.
+ */
+export async function listPaymentsPage(cursor?: number): Promise<PaymentPage> {
+  const total = cursor === undefined ? Number(await read<bigint>('payment_count')) : undefined
+  const end = cursor ?? total ?? 0
+  const { start, limit } = pageBounds(end)
+  if (limit === 0) return { payments: [], nextCursor: 0, total }
+  const raws = await read<RawPayment[]>('list_payments', { start: BigInt(start), limit })
+  return { payments: raws.map(mapPayment).reverse(), nextCursor: start, total }
+}
+
+/** Payments involving one VASP, in submission order (oldest first). */
+export async function listPaymentsByVasp(vasp: string, start = 0, limit = PAYMENT_PAGE_SIZE): Promise<PaymentRecord[]> {
+  const raws = await read<RawPayment[]>('list_payments_by_vasp', { vasp, start: BigInt(start), limit })
   return raws.map(mapPayment)
 }
 
@@ -224,13 +261,18 @@ export async function getPayment(id: string): Promise<PaymentRecord | null> {
   }
 }
 
-/** Every configured (non-zero) threshold for the known assets and jurisdictions. */
-export async function listThresholds(): Promise<ThresholdRow[]> {
-  const pairs = ASSETS.flatMap(a => JURISDICTIONS.map(j => ({ asset: a.contractId, jurisdiction: j })))
-  const amounts = await Promise.all(pairs.map(p => read<bigint>('get_threshold', p)))
-  return pairs
-    .map((p, i) => ({ ...p, amount: BigInt(amounts[i]) }))
+/** Decoded `(asset, jurisdiction, amount)` tuples from `list_thresholds`. */
+export type RawThreshold = [string, string, bigint | number | string]
+
+export function mapThresholds(rows: RawThreshold[]): ThresholdRow[] {
+  return rows
+    .map(([asset, jurisdiction, amount]) => ({ asset, jurisdiction, amount: BigInt(amount) }))
     .filter(r => r.amount > 0n)
+}
+
+/** Every configured (non-zero) threshold, in a single contract read. */
+export async function listThresholds(): Promise<ThresholdRow[]> {
+  return mapThresholds(await read<RawThreshold[]>('list_thresholds'))
 }
 
 /** Contract events from the RPC's retention window (about 7 days on testnet). */
@@ -289,6 +331,23 @@ export function setVaspExpiry(signer: Signer, address: string, expiresAt?: numbe
     address,
     expires_at: expiresAt === undefined ? undefined : BigInt(expiresAt),
   })
+}
+
+// ----- admin handover (two steps) -------------------------------------------
+
+/** Step 1, signed by the current admin. */
+export function proposeAdmin(signer: Signer, newAdmin: string) {
+  return write<void>(signer, 'propose_admin', { new_admin: newAdmin })
+}
+
+/** Step 2, signed by the proposed admin. */
+export function acceptAdmin(signer: Signer) {
+  return write<void>(signer, 'accept_admin', { caller: signer.publicKey })
+}
+
+/** Signed by the current admin to withdraw a pending proposal. */
+export function cancelAdminProposal(signer: Signer) {
+  return write<void>(signer, 'cancel_admin_proposal', {})
 }
 
 export function setThreshold(signer: Signer, asset: string, jurisdiction: string, amount: bigint) {
