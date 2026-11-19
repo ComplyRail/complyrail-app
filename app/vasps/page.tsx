@@ -28,7 +28,9 @@ export default function VaspsPage() {
       ? 'Address must be a Stellar public key (G…)'
       : form.publicKeyHex && !/^[0-9a-fA-F]{64}$/.test(form.publicKeyHex)
         ? 'Encryption key must be 32 bytes as 64 hex characters'
-        : null
+        : form.expiresDays && !(Number(form.expiresDays) >= 1)
+          ? 'Validity must be at least 1 day; an expiry in the past would deactivate the VASP immediately'
+          : null
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()

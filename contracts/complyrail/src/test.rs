@@ -228,6 +228,60 @@ fn reason_length_is_bounded() {
 }
 
 #[test]
+fn register_rejects_past_expiry() {
+    let t = setup(); // ledger time is 1_000
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Late"),
+        &s(&t.env, "US"),
+        &key(&t.env, 5),
+        &Some(1_000),
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Older"),
+        &s(&t.env, "US"),
+        &key(&t.env, 5),
+        &Some(999),
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn register_accepts_future_expiry() {
+    let t = setup();
+    let vasp = Address::generate(&t.env);
+    t.client.register_vasp(
+        &vasp,
+        &s(&t.env, "Future"),
+        &s(&t.env, "US"),
+        &key(&t.env, 5),
+        &Some(1_001),
+    );
+    assert_eq!(t.client.get_vasp(&vasp).expires_at, Some(1_001));
+}
+
+#[test]
+fn set_expiry_rejects_past_and_keeps_previous_value() {
+    let t = setup();
+    t.client.set_vasp_expiry(&t.vasp_a, &Some(5_000));
+    assert_eq!(
+        t.client.try_set_vasp_expiry(&t.vasp_a, &Some(1_000)),
+        Err(Ok(Error::InvalidInput))
+    );
+    assert_eq!(t.client.get_vasp(&t.vasp_a).expires_at, Some(5_000));
+}
+
+#[test]
+fn set_expiry_none_still_clears_expiry() {
+    let t = setup();
+    t.client.set_vasp_expiry(&t.vasp_a, &Some(5_000));
+    t.client.set_vasp_expiry(&t.vasp_a, &None);
+    assert_eq!(t.client.get_vasp(&t.vasp_a).expires_at, None);
+}
+
+#[test]
 fn revoking_again_is_allowed() {
     let t = setup();
     t.client

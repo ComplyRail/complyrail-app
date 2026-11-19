@@ -61,6 +61,8 @@ pub enum Error {
     ReasonRequired = 16,
     /// Reason exceeds `MAX_REASON_LEN` bytes.
     ReasonTooLong = 17,
+    /// A supplied value is malformed, e.g. an expiry that is already past.
+    InvalidInput = 18,
 }
 
 /// Upper bound on the reason attached to a status change, in bytes.
@@ -178,6 +180,17 @@ fn save_vasp(env: &Env, v: &VaspEntry) {
     let key = DataKey::Vasp(v.address.clone());
     env.storage().persistent().set(&key, v);
     bump_persistent(env, &key);
+}
+
+/// An expiry in the past would make the VASP inactive as soon as it is
+/// written, which is almost always a data-entry mistake.
+fn require_future_expiry(env: &Env, expires_at: Option<u64>) -> Result<(), Error> {
+    if let Some(t) = expires_at {
+        if t <= env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
+    }
+    Ok(())
 }
 
 fn vasp_is_active(env: &Env, v: &VaspEntry) -> bool {
@@ -358,6 +371,7 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        require_future_expiry(&env, expires_at)?;
         if env
             .storage()
             .persistent()
@@ -433,6 +447,7 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        require_future_expiry(&env, expires_at)?;
         let mut v = load_vasp(&env, &address)?;
         v.expires_at = expires_at;
         save_vasp(&env, &v);
