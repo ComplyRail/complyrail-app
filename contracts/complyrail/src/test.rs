@@ -439,6 +439,49 @@ fn release_rejected_at_and_after_expiry_and_reclaim_takes_over() {
     );
 }
 
+#[test]
+fn attest_after_expiry_is_rejected_and_payment_stays_reclaimable() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    // one second before expiry the attestation is still accepted
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + DEFAULT_PAYMENT_TTL - 1);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 7)));
+
+    // a second payment attested only after expiry must be refused
+    let late = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + 2 * DEFAULT_PAYMENT_TTL);
+    let r = t
+        .client
+        .try_submit_attestation(&late, &key(&t.env, 9), &s(&t.env, "IVMS101.2023"));
+    assert_eq!(r, Err(Ok(Error::PaymentExpired)));
+    let p = t.client.get_payment(&late);
+    assert_eq!(p.attestation_hash, None);
+    assert_eq!(p.status, PaymentStatus::Pending);
+
+    // the originator can still reclaim the late payment cleanly
+    t.client.reclaim_expired(&late);
+    assert_eq!(t.client.get_payment(&late).status, PaymentStatus::Reclaimed);
+}
+
 // ----- audit: actor on release / reject events -----------------------------
 
 // `events().all()` only reports the most recent invocation, so each assertion

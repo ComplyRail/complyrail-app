@@ -35,7 +35,7 @@ originator VASP                     contract                      beneficiary VA
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
 | `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
-| `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
+| `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment; only before `expires_at` |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold; only before `expires_at` |
 | `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
@@ -45,7 +45,7 @@ originator VASP                     contract                      beneficiary VA
 
 A held payment has one window per party, and they never overlap:
 
-| Ledger time `now` | Release / reject | Reclaim |
+| Ledger time `now` | Attest / release / reject | Reclaim |
 |---|---|---|
 | `now < expires_at` | allowed | `PaymentNotExpired` |
 | `now >= expires_at` | `PaymentExpired` (no grace period) | allowed (originator) |

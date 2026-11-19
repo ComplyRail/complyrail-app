@@ -565,6 +565,9 @@ impl ComplyRail {
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
         require_pending(&p)?;
+        if env.ledger().timestamp() >= p.expires_at {
+            return Err(Error::PaymentExpired);
+        }
         if p.attestation_hash.is_some() {
             return Err(Error::AttestationAlreadySubmitted);
         }
