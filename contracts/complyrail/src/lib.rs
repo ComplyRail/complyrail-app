@@ -275,6 +275,19 @@ pub struct VaspKeyRotated {
     pub new_key_hash: BytesN<32>,
 }
 
+/// Emitted on `vasp_upd` when a VASP's legal name or jurisdiction changes.
+/// Carries both the old and new values so the audit log shows the exact change.
+#[contractevent(topics = ["vasp_upd"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaspMetadataUpdated {
+    #[topic]
+    pub address: Address,
+    pub old_name: String,
+    pub new_name: String,
+    pub old_jurisdiction: String,
+    pub new_jurisdiction: String,
+}
+
 #[contractevent(topics = ["thr_set"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThresholdSet {
@@ -452,6 +465,36 @@ impl ComplyRail {
             new_key_hash,
         }
         .publish(&env);
+        Ok(())
+    }
+
+    /// Change a VASP's legal name and/or jurisdiction (admin only).
+    ///
+    /// Jurisdiction decides which threshold applies, so the change only
+    /// affects payments submitted after it. A payment's `requires_attestation`
+    /// is fixed when it is submitted, so pending payments keep the jurisdiction
+    /// they were submitted under: neither their attestation requirement nor
+    /// their release path changes. The old and new values are emitted on
+    /// `vasp_upd`.
+    pub fn update_vasp(
+        env: Env,
+        address: Address,
+        name: String,
+        jurisdiction: String,
+    ) -> Result<(), Error> {
+        require_admin(&env)?;
+        let mut v = load_vasp(&env, &address)?;
+        let event = VaspMetadataUpdated {
+            address: address.clone(),
+            old_name: v.name.clone(),
+            new_name: name.clone(),
+            old_jurisdiction: v.jurisdiction.clone(),
+            new_jurisdiction: jurisdiction.clone(),
+        };
+        v.name = name;
+        v.jurisdiction = jurisdiction;
+        save_vasp(&env, &v);
+        event.publish(&env);
         Ok(())
     }
 

@@ -562,3 +562,102 @@ fn rotate_key_requires_admin_auth() {
     let client = ComplyRailClient::new(&env, &id);
     client.rotate_vasp_key(&Address::generate(&env), &key(&env, 5));
 }
+
+// ----- metadata updates (#47) ----------------------------------------------
+
+#[test]
+fn update_vasp_changes_fields_and_emits_old_and_new() {
+    let t = setup();
+    let before = t.client.get_vasp(&t.vasp_a);
+    let new_name = s(&t.env, "Acme Exchange Ltd");
+    let new_jurisdiction = s(&t.env, "GB");
+    t.client
+        .update_vasp(&t.vasp_a, &new_name, &new_jurisdiction);
+
+    assert_last_event(
+        &t,
+        &VaspMetadataUpdated {
+            address: t.vasp_a.clone(),
+            old_name: before.name,
+            new_name: new_name.clone(),
+            old_jurisdiction: before.jurisdiction,
+            new_jurisdiction: new_jurisdiction.clone(),
+        },
+    );
+
+    let after = t.client.get_vasp(&t.vasp_a);
+    assert_eq!(after.name, new_name);
+    assert_eq!(after.jurisdiction, new_jurisdiction);
+    // key, status and expiry are not touched by a metadata update
+    assert_eq!(after.public_key, key(&t.env, 1));
+    assert_eq!(after.status, VaspStatus::Active);
+    assert_eq!(after.expires_at, None);
+}
+
+#[test]
+fn jurisdiction_change_applies_to_new_payments_only() {
+    let t = setup();
+    // US threshold is 3_000 (set in setup); GB gets its own, higher rule
+    t.client
+        .set_threshold(&t.token.address, &s(&t.env, "GB"), &10_000);
+
+    // under US: 5_000 is at or above 3_000 -> held for attestation
+    let held = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert!(t.client.get_payment(&held).requires_attestation);
+
+    t.client
+        .update_vasp(&t.vasp_a, &s(&t.env, "Acme Exchange"), &s(&t.env, "GB"));
+
+    // the pending payment keeps the decision it was submitted with
+    let still_held = t.client.get_payment(&held);
+    assert!(still_held.requires_attestation);
+    assert_eq!(still_held.status, PaymentStatus::Pending);
+    t.client
+        .submit_attestation(&held, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&held, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&held).status, PaymentStatus::Released);
+
+    // a payment submitted after the change is judged under GB
+    let fresh = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    let fresh = t.client.get_payment(&fresh);
+    assert!(!fresh.requires_attestation);
+    assert_eq!(fresh.status, PaymentStatus::Released);
+}
+
+#[test]
+fn update_unknown_vasp_fails() {
+    let t = setup();
+    let r = t.client.try_update_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "x"),
+        &s(&t.env, "US"),
+    );
+    assert_eq!(r, Err(Ok(Error::VaspNotFound)));
+}
+
+#[test]
+#[should_panic]
+fn update_vasp_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    // no mock_all_auths(): admin has not signed
+    let client = ComplyRailClient::new(&env, &id);
+    client.update_vasp(
+        &Address::generate(&env),
+        &s(&env, "x"),
+        &s(&env, "US"),
+    );
+}
