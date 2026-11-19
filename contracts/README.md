@@ -33,7 +33,8 @@ originator VASP                     contract                      beneficiary VA
 | `set_vasp_status(address, status)` | admin | `Active` / `Suspended` / `Revoked` |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
-| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | |
+| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | admin / – | `amount` must be `0 ..= 9223372036854775807` (`i64::MAX`, the classic Stellar asset maximum); larger values fail with `InvalidThreshold` |
+| `threshold_history(asset, jurisdiction, start, limit)` | – | Durable changelog per rule, oldest first. Keeps the last 100 changes; `seq` shows trimmed gaps. `limit` is capped at 100. |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |
@@ -42,6 +43,27 @@ originator VASP                     contract                      beneficiary VA
 | `get_payment`, `payment_count` | – | read |
 
 Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
+
+## Error codes
+
+The dashboard maps these numbers, so they are stable. Never renumber a code, and never reuse a retired one.
+
+| Code | Variant | Status | Meaning |
+|---|---|---|---|
+| 1 | `AlreadyInitialized` | **reserved (retired)** | Setup moved to the constructor. Cannot be returned. |
+| 2 | `NotInitialized` | active | Constructor never ran. Unreachable after deployment. |
+| 3 | `VaspAlreadyRegistered` | active | VASP address is already in the registry. |
+| 4 | `VaspNotFound` | active | No VASP registered at this address. |
+| 5 | `VaspNotActive` | active | VASP is suspended, revoked or expired. |
+| 6 | `InvalidAmount` | active | Payment amount is not positive. |
+| 7 | `PaymentNotFound` | active | No payment with this id. |
+| 8 | `PaymentNotPending` | active | Payment is already released, rejected or reclaimed. |
+| 9 | `AttestationRequired` | active | Payment is at or above threshold and has no attestation yet. |
+| 10 | `AttestationAlreadySubmitted` | active | Payment already has an attestation. |
+| 11 | `Unauthorized` | active | Caller is neither the beneficiary VASP nor the admin. |
+| 12 | `PaymentNotExpired` | active | Payment cannot be reclaimed before `expires_at`. |
+| 13 | `SameVasp` | active | Originator and beneficiary VASP are the same. |
+| 14 | `InvalidThreshold` | active | Threshold is negative or above `i64::MAX`. |
 
 ## Develop
 

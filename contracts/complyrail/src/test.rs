@@ -73,6 +73,25 @@ fn setup<'a>() -> Setup<'a> {
 // ----- init & admin --------------------------------------------------------
 
 #[test]
+fn error_codes_are_stable() {
+    // The dashboard maps these numbers, so they must never change.
+    assert_eq!(Error::AlreadyInitialized as u32, 1);
+    assert_eq!(Error::NotInitialized as u32, 2);
+    assert_eq!(Error::VaspAlreadyRegistered as u32, 3);
+    assert_eq!(Error::VaspNotFound as u32, 4);
+    assert_eq!(Error::VaspNotActive as u32, 5);
+    assert_eq!(Error::InvalidAmount as u32, 6);
+    assert_eq!(Error::PaymentNotFound as u32, 7);
+    assert_eq!(Error::PaymentNotPending as u32, 8);
+    assert_eq!(Error::AttestationRequired as u32, 9);
+    assert_eq!(Error::AttestationAlreadySubmitted as u32, 10);
+    assert_eq!(Error::Unauthorized as u32, 11);
+    assert_eq!(Error::PaymentNotExpired as u32, 12);
+    assert_eq!(Error::SameVasp as u32, 13);
+    assert_eq!(Error::InvalidThreshold as u32, 14);
+}
+
+#[test]
 fn initialize_sets_admin() {
     let t = setup();
     assert_eq!(t.client.admin(), t.admin);
@@ -201,6 +220,152 @@ fn negative_threshold_rejected() {
         .client
         .try_set_threshold(&t.token.address, &s(&t.env, "US"), &-1);
     assert_eq!(r, Err(Ok(Error::InvalidThreshold)));
+}
+
+#[test]
+fn threshold_above_max_supply_rejected() {
+    let t = setup();
+    let a = &t.token.address;
+    // the classic maximum is accepted...
+    t.client.set_threshold(a, &s(&t.env, "US"), &MAX_THRESHOLD);
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "US")), MAX_THRESHOLD);
+    // ...one unit more is not, and the stored value is left unchanged
+    let r = t
+        .client
+        .try_set_threshold(a, &s(&t.env, "US"), &(MAX_THRESHOLD + 1));
+    assert_eq!(r, Err(Ok(Error::InvalidThreshold)));
+    assert_eq!(t.client.get_threshold(a, &s(&t.env, "US")), MAX_THRESHOLD);
+}
+
+#[test]
+fn threshold_history_records_changes_in_order() {
+    let t = setup(); // setup() records US = 3_000 at ts 1_000
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    t.env.ledger().set_timestamp(2_000);
+    t.client.set_threshold(&a, &us, &4_000);
+    t.env.ledger().set_timestamp(3_000);
+    t.client.set_threshold(&a, &us, &5_000);
+
+    let h = t.client.threshold_history(&a, &us, &0, &10);
+    assert_eq!(h.len(), 3);
+    assert_eq!(
+        h.get(0).unwrap(),
+        ThresholdChange {
+            seq: 0,
+            amount: 3_000,
+            changed_at: 1_000
+        }
+    );
+    assert_eq!(
+        h.get(2).unwrap(),
+        ThresholdChange {
+            seq: 2,
+            amount: 5_000,
+            changed_at: 3_000
+        }
+    );
+}
+
+#[test]
+fn threshold_history_pages() {
+    let t = setup();
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    t.client.set_threshold(&a, &us, &4_000);
+    t.client.set_threshold(&a, &us, &5_000);
+
+    let page = t.client.threshold_history(&a, &us, &1, &1);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().amount, 4_000);
+
+    let tail = t.client.threshold_history(&a, &us, &2, &50);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.get(0).unwrap().amount, 5_000);
+
+    assert_eq!(t.client.threshold_history(&a, &us, &3, &10).len(), 0);
+    assert_eq!(t.client.threshold_history(&a, &us, &0, &0).len(), 0);
+}
+
+#[test]
+fn threshold_history_is_bounded() {
+    let t = setup(); // seq 0 from setup
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    for i in 1..=(MAX_THRESHOLD_HISTORY as i128 + 5) {
+        t.client.set_threshold(&a, &us, &(i * 10));
+    }
+    // 106 changes in total, so seq 0..=5 are trimmed and 6..=105 remain.
+    // A request for more than the cap still returns at most the cap.
+    let h = t.client.threshold_history(&a, &us, &0, &1_000);
+    assert_eq!(h.len(), MAX_THRESHOLD_HISTORY);
+    assert_eq!(h.get(0).unwrap().seq, 6);
+    assert_eq!(h.get(99).unwrap().seq, 105);
+    assert_eq!(h.get(99).unwrap().amount, 1_050);
+}
+
+#[test]
+fn threshold_history_is_per_rule_and_skips_rejected_values() {
+    let t = setup();
+    let a = t.token.address.clone();
+    let us = s(&t.env, "US");
+    let star = s(&t.env, "*");
+    t.client.set_threshold(&a, &star, &1_000);
+    // a rejected value is not a change and must not be recorded
+    let r = t.client.try_set_threshold(&a, &us, &-1);
+    assert_eq!(r, Err(Ok(Error::InvalidThreshold)));
+
+    assert_eq!(t.client.threshold_history(&a, &us, &0, &10).len(), 1);
+    assert_eq!(t.client.threshold_history(&a, &star, &0, &10).len(), 1);
+    let sg = s(&t.env, "SG");
+    assert_eq!(t.client.threshold_history(&a, &sg, &0, &10).len(), 0);
+}
+
+#[test]
+fn exact_jurisdiction_threshold_boundary() {
+    // US rule is 3_000: "at or above" means 3_000 itself needs attestation.
+    let t = setup();
+    for (amount, expected) in [(2_999i128, false), (3_000, true), (3_001, true)] {
+        let id = t.client.submit_payment(
+            &t.vasp_a,
+            &t.vasp_b,
+            &t.beneficiary,
+            &t.token.address,
+            &amount,
+        );
+        assert_eq!(
+            t.client.get_payment(&id).requires_attestation,
+            expected,
+            "amount {amount}"
+        );
+    }
+}
+
+#[test]
+fn wildcard_threshold_boundary() {
+    // SG has no rule of its own, so the "*" fallback of 1_000 applies.
+    let t = setup();
+    let token = t.token.address.clone();
+    t.client.set_threshold(&token, &s(&t.env, "*"), &1_000);
+    let sg_vasp = Address::generate(&t.env);
+    t.client.register_vasp(
+        &sg_vasp,
+        &s(&t.env, "Lion Remit"),
+        &s(&t.env, "SG"),
+        &key(&t.env, 3),
+        &None,
+    );
+    StellarAssetClient::new(&t.env, &token).mint(&sg_vasp, &10_000);
+    for (amount, expected) in [(999i128, false), (1_000, true), (1_001, true)] {
+        let id = t
+            .client
+            .submit_payment(&sg_vasp, &t.vasp_b, &t.beneficiary, &token, &amount);
+        assert_eq!(
+            t.client.get_payment(&id).requires_attestation,
+            expected,
+            "amount {amount}"
+        );
+    }
 }
 
 // ----- payments ------------------------------------------------------------
