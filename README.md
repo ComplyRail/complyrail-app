@@ -2,7 +2,7 @@
 
 Compliance dashboard for ComplyRail — manage VASP registry, configure thresholds, review pending payments, and export audit logs.
 
-**🚀 [Live Demo (testnet)](https://complyrail.github.io/complyrail-app/)** | [Deployment](./DEPLOYMENT.md) | [Contract docs](./contracts/README.md)
+**🚀 [Live Demo (testnet)](https://complyrail.github.io/complyrail-app/)** | [Deployment](./DEPLOYMENT.md) | [Contract docs](./contracts/README.md) | [On-chain privacy](./docs/privacy.md)
 
 ## Features
 
@@ -16,6 +16,8 @@ Compliance dashboard for ComplyRail — manage VASP registry, configure threshol
 ## Smart Contract
 
 The Soroban contract lives in [`contracts/`](contracts/README.md): VASP registry, per-asset/jurisdiction thresholds, payment escrow and IVMS101 attestation hashes, with unit tests and CI.
+
+Personal data stays off-chain, but amounts, asset addresses, VASP addresses and beneficiary addresses are public on the ledger. See [`docs/privacy.md`](./docs/privacy.md) for exactly what is public and what is not.
 
 The dashboard talks to the deployed contract directly via `@stellar/stellar-sdk` and signs with the connected wallet (Stellar Wallets Kit). There is no mock data: every table is read from testnet, and every button sends a real transaction.
 
