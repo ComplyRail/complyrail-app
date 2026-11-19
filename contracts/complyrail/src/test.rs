@@ -705,3 +705,115 @@ fn cancel_event_carries_asset_and_amount() {
     ));
     assert_eq!(events_of(&t), expected);
 }
+
+// ----- open payment limit --------------------------------------------------
+
+fn submit_held(t: &Setup, amount: i128) -> u64 {
+    t.client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &amount)
+}
+
+#[test]
+fn default_open_limit_is_100() {
+    let t = setup();
+    assert_eq!(t.client.get_max_open_per_vasp(), DEFAULT_MAX_OPEN_PER_VASP);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 0);
+}
+
+#[test]
+fn open_limit_blocks_extra_held_payments_without_moving_funds() {
+    let t = setup();
+    t.client.set_max_open_per_vasp(&2);
+    assert_eq!(t.client.get_max_open_per_vasp(), 2);
+
+    t.client.submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &5_000);
+    t.client.submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &5_000);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 2);
+
+    let r = t.client.try_submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert_eq!(r, Err(Ok(Error::OpenLimitReached)));
+    assert_eq!(t.client.payment_count(), 2);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 2);
+    assert_eq!(t.token.balance(&t.vasp_a), 990_000);
+
+    // raising the limit lets the originator open more
+    t.client.set_max_open_per_vasp(&3);
+    t.client.submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &5_000);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 3);
+}
+
+#[test]
+fn zero_open_limit_is_rejected() {
+    let t = setup();
+    let r = t.client.try_set_max_open_per_vasp(&0);
+    assert_eq!(r, Err(Ok(Error::InvalidLimit)));
+    assert_eq!(t.client.get_max_open_per_vasp(), DEFAULT_MAX_OPEN_PER_VASP);
+}
+
+#[test]
+fn below_threshold_payments_do_not_use_open_slots() {
+    let t = setup();
+    t.client.set_max_open_per_vasp(&1);
+    t.client.submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &5_000);
+
+    // settles immediately, so it is not blocked by the held payment
+    t.client.submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &2_999);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 1);
+    assert_eq!(t.token.balance(&t.beneficiary), 2_999);
+}
+
+#[test]
+fn every_resolution_path_frees_an_open_slot() {
+    let t = setup();
+    t.client.set_max_open_per_vasp(&1);
+
+    // cancel frees the slot
+    let a = submit_held(&t, 5_000);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 1);
+    t.client.cancel_payment(&a);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 0);
+
+    // reject frees the slot
+    let b = submit_held(&t, 5_000);
+    t.client.reject_payment(&b, &t.vasp_b, &s(&t.env, "bad data"));
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 0);
+
+    // release frees the slot
+    let c = submit_held(&t, 5_000);
+    t.client
+        .submit_attestation(&c, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.client.release_payment(&c, &t.vasp_b);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 0);
+
+    // reclaim frees the slot
+    let d = submit_held(&t, 5_000);
+    let r = t.client.try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &5_000);
+    assert_eq!(r, Err(Ok(Error::OpenLimitReached)));
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&d);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 0);
+    submit_held(&t, 5_000);
+}
+
+#[test]
+fn resolving_an_already_resolved_payment_does_not_free_a_slot() {
+    let t = setup();
+    t.client.set_max_open_per_vasp(&2);
+    let a = submit_held(&t, 5_000);
+    submit_held(&t, 5_000);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 2);
+
+    t.client.cancel_payment(&a);
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 1);
+
+    // a second cancel fails and must not free another slot
+    let r = t.client.try_cancel_payment(&a);
+    assert_eq!(r, Err(Ok(Error::PaymentNotPending)));
+    assert_eq!(t.client.open_payment_count(&t.vasp_a), 1);
+}
