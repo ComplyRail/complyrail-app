@@ -5,7 +5,7 @@ import { useRole, useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
-import { formatAddress } from '@/lib/format'
+import { formatAddress, vaspKeyError } from '@/lib/format'
 import { JURISDICTIONS } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { registerVasp, setVaspStatus } from '@/lib/contract'
@@ -25,9 +25,7 @@ export default function VaspsPage() {
   const formError =
     form.address && !isValidStellarAddress(form.address)
       ? 'Address must be a Stellar public key (G…)'
-      : form.publicKeyHex && !/^[0-9a-fA-F]{64}$/.test(form.publicKeyHex)
-        ? 'Encryption key must be 32 bytes as 64 hex characters'
-        : null
+      : form.publicKeyHex && vaspKeyError(form.publicKeyHex)
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
