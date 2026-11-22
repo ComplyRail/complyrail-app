@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { config } from '@/lib/config'
-import type { Signer } from '@/lib/contract'
+import { clearClientCache, type Signer } from '@/lib/contract'
 
 interface WalletState {
   address?: string
@@ -24,6 +24,7 @@ type Kit = typeof import('@creit.tech/stellar-wallets-kit/sdk').StellarWalletsKi
 export function WalletProvider({ children }: { children: React.ReactNode }) {
   const kitRef = useRef<Kit | null>(null)
   const [address, setAddress] = useState<string>()
+  const [walletId, setWalletId] = useState<string>()
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string>()
 
@@ -51,6 +52,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     loadKit()
       .then(kit => {
         kit.setWallet(saved!.walletId)
+        setWalletId(saved!.walletId)
         setAddress(saved!.address)
       })
       .catch(() => undefined)
@@ -62,9 +64,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     try {
       const kit = await loadKit()
       const { address } = await kit.authModal()
+      const id = kit.selectedModule.productId
+      setWalletId(id)
       setAddress(address)
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ walletId: kit.selectedModule.productId, address }))
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ walletId: id, address }))
       } catch {
         /* storage unavailable */
       }
@@ -86,19 +90,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     } catch {
       /* storage unavailable */
     }
+    clearClientCache()
+    setWalletId(undefined)
     setAddress(undefined)
   }, [])
 
   const signer = useMemo<Signer | undefined>(() => {
-    if (!address) return undefined
+    if (!address || !walletId) return undefined
     return {
       publicKey: address,
+      walletId,
       signTransaction: async (xdr: string) => {
         const kit = await loadKit()
         return kit.signTransaction(xdr, { networkPassphrase: config.networkPassphrase, address })
       },
     }
-  }, [address, loadKit])
+  }, [address, walletId, loadKit])
 
   const value = useMemo(
     () => ({ address, connecting, error, connect, disconnect, signer }),

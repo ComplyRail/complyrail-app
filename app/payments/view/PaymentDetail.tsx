@@ -11,6 +11,7 @@ import { assetSymbol } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
 import {
   buildIvmsPayload,
+  canonicalJson,
   reclaimExpired,
   rejectPayment,
   releasePayment,
@@ -67,9 +68,11 @@ export function PaymentDetail({ id }: { id: string }) {
       return
     }
     setSealError(null)
-    const json = JSON.stringify(payload)
-    const hash = await sha256Hex(json)
-    setEnvelope(await sealIvmsPayload(json, recipientKey))
+    // Hash the RFC 8785 canonical form so any implementation can reproduce it,
+    // and seal those same bytes so the recipient can verify the on-chain hash.
+    const canonical = canonicalJson(payload)
+    const hash = await sha256Hex(canonical)
+    setEnvelope(await sealIvmsPayload(canonical, recipientKey))
     await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, IVMS101_VERSION))
   }
 
