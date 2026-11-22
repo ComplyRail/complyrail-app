@@ -49,6 +49,9 @@ pub const MAX_THRESHOLD_HISTORY: u32 = 100;
 /// Upper bound on entries returned by one `list_vasps` call.
 pub const MAX_VASP_PAGE: u32 = 100;
 
+/// Upper bound on how many payment ids one `refund_pending_for_vasp` call scans.
+pub const MAX_REFUND_BATCH: u64 = 100;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -89,6 +92,14 @@ pub enum Error {
     /// Jurisdiction is empty or the `"*"` wildcard, which is reserved for
     /// threshold fallback rules and cannot name a VASP's jurisdiction.
     InvalidJurisdiction = 21,
+    /// The receiving VASP is still active, so the originator cannot reclaim early.
+    ReceiverStillActive = 22,
+    /// Batch size exceeds `MAX_REFUND_BATCH`.
+    BatchTooLarge = 23,
+    /// Holding this payment would push the originator's escrow exposure over its cap.
+    ExposureCapExceeded = 24,
+    /// Payment amount is below the configured minimum for the asset.
+    BelowMinAmount = 25,
 }
 
 /// Upper bound on the reason attached to a status change, in bytes.
@@ -153,8 +164,12 @@ pub struct Payment {
     pub ivms_version: Option<String>,
     pub attested_at: Option<u64>,
     pub created_at: u64,
+    /// Ledger sequence at submission, for ordering events against the ledger.
+    pub created_ledger: u32,
     pub expires_at: u64,
     pub resolved_at: Option<u64>,
+    /// Ledger sequence at release, rejection or reclaim.
+    pub resolved_ledger: Option<u32>,
 }
 
 #[contracttype]
@@ -172,6 +187,12 @@ enum DataKey {
     Threshold(Address, String),
     ThresholdHistory(Address, String),
     Payment(u64),
+    /// Per-(originator, asset) cap on value held in escrow.
+    ExposureCap(Address, Address),
+    /// Smallest payment accepted for an asset.
+    MinAmount(Address),
+    /// Per-(originator, asset) sum of currently held (pending) amounts.
+    Exposure(Address, Address),
 }
 
 #[contract]
@@ -375,10 +396,27 @@ fn vasp_count_value(env: &Env) -> u32 {
         .unwrap_or(0)
 }
 
+fn exposure(env: &Env, vasp: &Address, asset: &Address) -> i128 {
+    let key = DataKey::Exposure(vasp.clone(), asset.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+fn set_exposure(env: &Env, vasp: &Address, asset: &Address, amount: i128) {
+    let key = DataKey::Exposure(vasp.clone(), asset.clone());
+    env.storage().persistent().set(&key, &amount);
+    bump_persistent(env, &key);
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
+    if p.requires_attestation {
+        // A held payment is leaving escrow, so it stops counting towards exposure.
+        let held = exposure(env, &p.from_vasp, &p.asset);
+        set_exposure(env, &p.from_vasp, &p.asset, held - p.amount);
+    }
     p.status = status;
     p.resolved_at = Some(env.ledger().timestamp());
+    p.resolved_ledger = Some(env.ledger().sequence());
     save_payment(env, p);
 }
 
@@ -459,6 +497,7 @@ pub struct PaymentSubmitted {
     pub to_vasp: Address,
     pub amount: i128,
     pub requires_attestation: bool,
+    pub created_ledger: u32,
 }
 
 #[contractevent(topics = ["att_sub"])]
@@ -476,6 +515,7 @@ pub struct PaymentReleased {
     #[topic]
     pub id: u64,
     pub amount: i128,
+    pub resolved_ledger: u32,
 }
 
 #[contractevent(topics = ["pay_rej"])]
@@ -487,6 +527,7 @@ pub struct PaymentRejected {
     /// Optional sha256 of the evidence supporting the rejection (see
     /// `reject_payment` for the expected format). `None` for expiry reclaims.
     pub evidence_hash: Option<BytesN<32>>,
+    pub resolved_ledger: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -813,6 +854,60 @@ impl ComplyRail {
         out
     }
 
+    // ----- Escrow exposure caps -------------------------------------------
+
+    /// Caps the total value `vasp` may hold in escrow in `asset` at once.
+    /// Only held (attestation-required) payments count. Without a cap the
+    /// originator is unlimited.
+    pub fn set_exposure_cap(
+        env: Env,
+        vasp: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        require_admin(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let key = DataKey::ExposureCap(vasp, asset);
+        env.storage().persistent().set(&key, &amount);
+        bump_persistent(&env, &key);
+        Ok(())
+    }
+
+    /// Admin sets the smallest payment accepted in `asset`. `0` disables the
+    /// minimum (any positive amount is accepted).
+    pub fn set_min_amount(env: Env, asset: Address, amount: i128) -> Result<(), Error> {
+        require_admin(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let key = DataKey::MinAmount(asset);
+        env.storage().persistent().set(&key, &amount);
+        bump_persistent(&env, &key);
+        Ok(())
+    }
+
+    /// Smallest accepted payment in `asset` (0 when unset).
+    pub fn get_min_amount(env: Env, asset: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MinAmount(asset))
+            .unwrap_or(0)
+    }
+
+    /// Current cap for `vasp` in `asset`, or `None` when uncapped.
+    pub fn get_exposure_cap(env: Env, vasp: Address, asset: Address) -> Option<i128> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ExposureCap(vasp, asset))
+    }
+
+    /// Sum of `vasp`'s currently held (pending) amounts in `asset`.
+    pub fn get_exposure(env: Env, vasp: Address, asset: Address) -> i128 {
+        exposure(&env, &vasp, &asset)
+    }
+
     // ----- Payments --------------------------------------------------------
 
     /// Originating VASP sends `amount` of `asset` towards `beneficiary` at
@@ -830,11 +925,32 @@ impl ComplyRail {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        let min_amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MinAmount(asset.clone()))
+            .unwrap_or(0);
+        if amount < min_amount {
+            return Err(Error::BelowMinAmount);
+        }
         if from_vasp == to_vasp {
             return Err(Error::SameVasp);
         }
         let origin = require_active_vasp(&env, &from_vasp)?;
         require_active_vasp(&env, &to_vasp)?;
+
+        let requires_attestation = amount >= threshold_for(&env, &asset, &origin.jurisdiction);
+        if requires_attestation {
+            let cap_key = DataKey::ExposureCap(from_vasp.clone(), asset.clone());
+            if let Some(cap) = env.storage().persistent().get::<_, i128>(&cap_key) {
+                let total = exposure(&env, &from_vasp, &asset)
+                    .checked_add(amount)
+                    .ok_or(Error::ExposureCapExceeded)?;
+                if total > cap {
+                    return Err(Error::ExposureCapExceeded);
+                }
+            }
+        }
 
         token::Client::new(&env, &asset).transfer(
             &from_vasp,
@@ -849,7 +965,6 @@ impl ComplyRail {
         bump_instance(&env);
 
         let now = env.ledger().timestamp();
-        let requires_attestation = amount >= threshold_for(&env, &asset, &origin.jurisdiction);
         let mut p = Payment {
             id,
             from_vasp: from_vasp.clone(),
@@ -863,8 +978,10 @@ impl ComplyRail {
             ivms_version: None,
             attested_at: None,
             created_at: now,
+            created_ledger: env.ledger().sequence(),
             expires_at: now + ttl,
             resolved_at: None,
+            resolved_ledger: None,
         };
 
         PaymentSubmitted {
@@ -873,14 +990,22 @@ impl ComplyRail {
             to_vasp,
             amount,
             requires_attestation,
+            created_ledger: env.ledger().sequence(),
         }
         .publish(&env);
 
         if requires_attestation {
+            let held = exposure(&env, &p.from_vasp, &p.asset);
+            set_exposure(&env, &p.from_vasp, &p.asset, held + p.amount);
             save_payment(&env, &p);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released);
-            PaymentReleased { id, amount }.publish(&env);
+            PaymentReleased {
+                id,
+                amount,
+                resolved_ledger: env.ledger().sequence(),
+            }
+            .publish(&env);
         }
         Ok(id)
     }
@@ -929,6 +1054,7 @@ impl ComplyRail {
         PaymentReleased {
             id: payment_id,
             amount: p.amount,
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
@@ -962,6 +1088,7 @@ impl ComplyRail {
             id: payment_id,
             reason,
             evidence_hash,
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
@@ -982,9 +1109,80 @@ impl ComplyRail {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
             evidence_hash: None,
+            resolved_ledger: env.ledger().sequence(),
         }
         .publish(&env);
         Ok(())
+    }
+
+    /// Originating VASP reclaims a held payment immediately when the
+    /// receiving VASP is no longer active (revoked, suspended or expired),
+    /// instead of waiting for `expires_at`.
+    pub fn reclaim_inactive(env: Env, payment_id: u64) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.from_vasp.require_auth();
+        require_pending(&p)?;
+        let receiver = load_vasp(&env, &p.to_vasp)?;
+        if vasp_is_active(&env, &receiver) {
+            return Err(Error::ReceiverStillActive);
+        }
+        let to = p.from_vasp.clone();
+        settle(&env, &mut p, &to, PaymentStatus::Reclaimed);
+        PaymentRejected {
+            id: payment_id,
+            reason: String::from_str(&env, "receiver_inactive"),
+            evidence_hash: None,
+            resolved_ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Admin refunds pending payments addressed to an inactive VASP, scanning
+    /// payment ids `start_id..start_id + limit` (bounded by `MAX_REFUND_BATCH`).
+    /// Returns the next id to resume from, or `payment_count` when finished.
+    pub fn refund_pending_for_vasp(
+        env: Env,
+        vasp: Address,
+        start_id: u64,
+        limit: u64,
+    ) -> Result<u64, Error> {
+        require_admin(&env)?;
+        if limit > MAX_REFUND_BATCH {
+            return Err(Error::BatchTooLarge);
+        }
+        let receiver = load_vasp(&env, &vasp)?;
+        if vasp_is_active(&env, &receiver) {
+            return Err(Error::ReceiverStillActive);
+        }
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextPaymentId)
+            .unwrap_or(0);
+        let end = core::cmp::min(start_id.saturating_add(limit), count);
+        let mut id = start_id;
+        while id < end {
+            if let Some(mut p) = env
+                .storage()
+                .persistent()
+                .get::<_, Payment>(&DataKey::Payment(id))
+            {
+                if p.status == PaymentStatus::Pending && p.to_vasp == vasp {
+                    let to = p.from_vasp.clone();
+                    settle(&env, &mut p, &to, PaymentStatus::Rejected);
+                    PaymentRejected {
+                        id,
+                        reason: String::from_str(&env, "receiver_inactive"),
+                        evidence_hash: None,
+                        resolved_ledger: env.ledger().sequence(),
+                    }
+                    .publish(&env);
+                }
+            }
+            id += 1;
+        }
+        Ok(end)
     }
 
     pub fn get_payment(env: Env, payment_id: u64) -> Result<Payment, Error> {

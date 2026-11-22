@@ -42,8 +42,10 @@ export interface RawPayment {
   ivms_version?: string | null
   attested_at?: bigint | null
   created_at: bigint
+  created_ledger: number
   expires_at: bigint
   resolved_at?: bigint | null
+  resolved_ledger?: number | null
 }
 
 const optNum = (v?: bigint | null) => (v === undefined || v === null ? undefined : Number(v))
@@ -74,8 +76,10 @@ export function mapPayment(r: RawPayment): PaymentRecord {
     ivmsVersion: r.ivms_version ?? undefined,
     attestedAt: optNum(r.attested_at),
     createdAt: Number(r.created_at),
+    createdLedger: Number(r.created_ledger),
     expiresAt: Number(r.expires_at),
     resolvedAt: optNum(r.resolved_at),
+    resolvedLedger: r.resolved_ledger == null ? undefined : Number(r.resolved_ledger),
   }
 }
 

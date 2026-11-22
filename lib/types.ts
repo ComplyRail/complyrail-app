@@ -42,8 +42,12 @@ export interface PaymentRecord {
   ivmsVersion?: string
   attestedAt?: number
   createdAt: number
+  /** ledger sequence at submission */
+  createdLedger: number
   expiresAt: number
   resolvedAt?: number
+  /** ledger sequence at release, rejection or reclaim */
+  resolvedLedger?: number
 }
 
 export type AuditEventType =
