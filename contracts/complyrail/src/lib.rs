@@ -32,6 +32,16 @@ mod test;
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Largest amount a threshold may hold: the maximum supply of a classic
+/// Stellar asset, `i64::MAX` stroops. Soroban token interfaces expose no
+/// standard total-supply getter, so this is the bound used for every asset.
+/// A threshold above it could never be compared meaningfully against a payment.
+pub const MAX_THRESHOLD: i128 = i64::MAX as i128;
+
+/// Most recent threshold changes kept per `(asset, jurisdiction)` rule.
+/// Older entries are dropped; `ThresholdChange::seq` shows any gap.
+pub const MAX_THRESHOLD_HISTORY: u32 = 100;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -40,8 +50,10 @@ const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// Reserved (unused since setup moved to the constructor).
+    /// Retired (code 1 is reserved and must never be reused). Setup moved to
+    /// the constructor, so this can no longer be returned.
     AlreadyInitialized = 1,
+    /// Only returned if the constructor never ran. Unreachable after deployment.
     NotInitialized = 2,
     VaspAlreadyRegistered = 3,
     VaspNotFound = 4,
@@ -92,6 +104,16 @@ pub struct VaspEntry {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdChange {
+    /// Per-rule sequence number, starting at 0 and never reset. A jump in
+    /// `seq` between retained entries means older changes were trimmed.
+    pub seq: u64,
+    pub amount: i128,
+    pub changed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Payment {
     pub id: u64,
     pub from_vasp: Address,
@@ -119,6 +141,7 @@ enum DataKey {
     VaspList,
     Vasp(Address),
     Threshold(Address, String),
+    ThresholdHistory(Address, String),
     Payment(u64),
 }
 
@@ -226,6 +249,34 @@ fn threshold_for(env: &Env, asset: &Address, jurisdiction: &String) -> i128 {
         .persistent()
         .get::<_, i128>(&wildcard)
         .unwrap_or(0)
+}
+
+/// Appends a change to the rule's history, dropping the oldest entries so the
+/// list never holds more than `MAX_THRESHOLD_HISTORY` items.
+fn record_threshold_change(env: &Env, asset: &Address, jurisdiction: &String, amount: i128) {
+    let key = DataKey::ThresholdHistory(asset.clone(), jurisdiction.clone());
+    let old: Vec<ThresholdChange> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    let next_seq = if old.is_empty() {
+        0
+    } else {
+        old.get(old.len() - 1).unwrap().seq + 1
+    };
+    let skip = (old.len() + 1).saturating_sub(MAX_THRESHOLD_HISTORY);
+    let mut hist = Vec::new(env);
+    for i in skip..old.len() {
+        hist.push_back(old.get(i).unwrap());
+    }
+    hist.push_back(ThresholdChange {
+        seq: next_seq,
+        amount,
+        changed_at: env.ledger().timestamp(),
+    });
+    env.storage().persistent().set(&key, &hist);
+    bump_persistent(env, &key);
 }
 
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
@@ -449,12 +500,13 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<(), Error> {
         require_admin(&env)?;
-        if amount < 0 {
+        if !(0..=MAX_THRESHOLD).contains(&amount) {
             return Err(Error::InvalidThreshold);
         }
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
         env.storage().persistent().set(&key, &amount);
         bump_persistent(&env, &key);
+        record_threshold_change(&env, &asset, &jurisdiction, amount);
         ThresholdSet {
             asset,
             jurisdiction,
@@ -466,6 +518,32 @@ impl ComplyRail {
 
     pub fn get_threshold(env: Env, asset: Address, jurisdiction: String) -> i128 {
         threshold_for(&env, &asset, &jurisdiction)
+    }
+
+    /// Changelog for one `(asset, jurisdiction)` rule, oldest first. Returns up
+    /// to `limit` entries (capped at `MAX_THRESHOLD_HISTORY`) starting at index
+    /// `start` of the retained history. Past the end returns an empty list.
+    pub fn threshold_history(
+        env: Env,
+        asset: Address,
+        jurisdiction: String,
+        start: u32,
+        limit: u32,
+    ) -> Vec<ThresholdChange> {
+        let key = DataKey::ThresholdHistory(asset, jurisdiction);
+        let hist: Vec<ThresholdChange> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let end = hist
+            .len()
+            .min(start.saturating_add(limit.min(MAX_THRESHOLD_HISTORY)));
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            out.push_back(hist.get(i).unwrap());
+        }
+        out
     }
 
     // ----- Payments --------------------------------------------------------
