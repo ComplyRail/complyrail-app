@@ -35,6 +35,7 @@ fn setup_with_ttl<'a>(payment_ttl: Option<u64>) -> Setup<'a> {
     env.ledger().set_timestamp(1_000);
 
     let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
     let vasp_a = Address::generate(&env);
     let vasp_b = Address::generate(&env);
     let beneficiary = Address::generate(&env);
@@ -45,7 +46,7 @@ fn setup_with_ttl<'a>(payment_ttl: Option<u64>) -> Setup<'a> {
     StellarAssetClient::new(&env, &token_addr).mint(&vasp_a, &1_000_000);
     let token = TokenClient::new(&env, &token_addr);
 
-    let id = env.register(ComplyRail, (admin.clone(), payment_ttl));
+    let id = env.register(ComplyRail, (admin.clone(), threshold_admin.clone(), payment_ttl));
     let client = ComplyRailClient::new(&env, &id);
     client.register_vasp(
         &vasp_a,
@@ -107,11 +108,15 @@ fn constructor_respects_custom_ttl() {
     env.mock_all_auths();
     env.ledger().set_timestamp(500);
     let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
     StellarAssetClient::new(&env, &sac.address()).mint(&a, &100);
-    let id = env.register(ComplyRail, (admin.clone(), Some(60u64)));
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), Some(60u64)),
+    );
     let c = ComplyRailClient::new(&env, &id);
     c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
     c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
@@ -165,12 +170,153 @@ fn unknown_vasp_is_not_active() {
 #[test]
 fn suspend_vasp_blocks_payments() {
     let t = setup();
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason"));
     assert!(!t.client.is_vasp_active(&t.vasp_b));
     let r =
         t.client
             .try_submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, &t.token.address, &100);
     assert_eq!(r, Err(Ok(Error::VaspNotActive)));
+}
+
+#[test]
+fn suspended_vasp_can_be_reactivated() {
+    let t = setup();
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason"));
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Active, &s(&t.env, "test reason"));
+    assert!(t.client.is_vasp_active(&t.vasp_b));
+}
+
+#[test]
+fn revoked_vasp_cannot_be_reactivated_or_suspended() {
+    let t = setup();
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "test reason"));
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Active, &s(&t.env, "test reason")),
+        Err(Ok(Error::VaspRevoked))
+    );
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason")),
+        Err(Ok(Error::VaspRevoked))
+    );
+    // the failed attempts left the status untouched
+    assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Revoked);
+    assert!(!t.client.is_vasp_active(&t.vasp_b));
+}
+
+#[test]
+fn suspend_and_revoke_require_a_reason() {
+    let t = setup();
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "")),
+        Err(Ok(Error::ReasonRequired))
+    );
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "")),
+        Err(Ok(Error::ReasonRequired))
+    );
+    // a failed attempt does not change the status
+    assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Active);
+}
+
+#[test]
+fn reactivation_does_not_require_a_reason() {
+    let t = setup();
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "review"));
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Active, &s(&t.env, ""));
+    assert!(t.client.is_vasp_active(&t.vasp_b));
+}
+
+#[test]
+fn reason_length_is_bounded() {
+    let t = setup();
+    let at_limit = String::from_bytes(&t.env, &[b'a'; MAX_REASON_LEN as usize]);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &at_limit);
+    let too_long = String::from_bytes(&t.env, &[b'a'; MAX_REASON_LEN as usize + 1]);
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &too_long),
+        Err(Ok(Error::ReasonTooLong))
+    );
+    assert_eq!(
+        t.client
+            .try_set_vasp_status(&t.vasp_b, &VaspStatus::Active, &too_long),
+        Err(Ok(Error::ReasonTooLong))
+    );
+}
+
+#[test]
+fn register_rejects_past_expiry() {
+    let t = setup(); // ledger time is 1_000
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Late"),
+        &s(&t.env, "US"),
+        &key(&t.env, 5),
+        &Some(1_000),
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+    let r = t.client.try_register_vasp(
+        &Address::generate(&t.env),
+        &s(&t.env, "Older"),
+        &s(&t.env, "US"),
+        &key(&t.env, 5),
+        &Some(999),
+    );
+    assert_eq!(r, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn register_accepts_future_expiry() {
+    let t = setup();
+    let vasp = Address::generate(&t.env);
+    t.client.register_vasp(
+        &vasp,
+        &s(&t.env, "Future"),
+        &s(&t.env, "US"),
+        &key(&t.env, 5),
+        &Some(1_001),
+    );
+    assert_eq!(t.client.get_vasp(&vasp).expires_at, Some(1_001));
+}
+
+#[test]
+fn set_expiry_rejects_past_and_keeps_previous_value() {
+    let t = setup();
+    t.client.set_vasp_expiry(&t.vasp_a, &Some(5_000));
+    assert_eq!(
+        t.client.try_set_vasp_expiry(&t.vasp_a, &Some(1_000)),
+        Err(Ok(Error::InvalidInput))
+    );
+    assert_eq!(t.client.get_vasp(&t.vasp_a).expires_at, Some(5_000));
+}
+
+#[test]
+fn set_expiry_none_still_clears_expiry() {
+    let t = setup();
+    t.client.set_vasp_expiry(&t.vasp_a, &Some(5_000));
+    t.client.set_vasp_expiry(&t.vasp_a, &None);
+    assert_eq!(t.client.get_vasp(&t.vasp_a).expires_at, None);
+}
+
+#[test]
+fn revoking_again_is_allowed() {
+    let t = setup();
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "test reason"));
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Revoked, &s(&t.env, "test reason"));
+    assert_eq!(t.client.get_vasp(&t.vasp_b).status, VaspStatus::Revoked);
 }
 
 #[test]
@@ -191,7 +337,11 @@ fn expired_vasp_is_inactive() {
 fn register_requires_admin_auth() {
     let env = Env::default();
     let admin = Address::generate(&env);
-    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    let threshold_admin = Address::generate(&env);
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), None::<u64>),
+    );
     // no mock_all_auths(): admin has not signed
     let client = ComplyRailClient::new(&env, &id);
     client.register_vasp(
@@ -645,7 +795,8 @@ fn release_settles_after_beneficiary_vasp_suspended() {
     t.client
         .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
 
-    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    t.client
+        .set_vasp_status(&t.vasp_b, &VaspStatus::Suspended, &s(&t.env, "test reason"));
     assert!(!t.client.is_vasp_active(&t.vasp_b));
 
     // Current behaviour: release is not gated on the beneficiary VASP's status.
@@ -775,11 +926,12 @@ fn attest_after_reclaim_is_rejected() {
 
 /// Creates a contract with real auth checks and hands admin rights from
 /// `admin` to `new_admin`. Only the two transfer signatures are mocked.
-fn env_after_admin_transfer() -> (Env, Address, Address, Address) {
+fn env_after_admin_transfer() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
-    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    let threshold_admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), threshold_admin.clone(), None::<u64>));
 
     let args: soroban_sdk::Vec<soroban_sdk::Val> = (new_admin.clone(),).into_val(&env);
     let by_admin = MockAuthInvoke {
@@ -805,12 +957,12 @@ fn env_after_admin_transfer() -> (Env, Address, Address, Address) {
         },
     ]);
     ComplyRailClient::new(&env, &id).transfer_admin(&new_admin);
-    (env, id, admin, new_admin)
+    (env, id, admin, new_admin, threshold_admin)
 }
 
 #[test]
 fn previous_admin_loses_registry_and_threshold_rights() {
-    let (env, id, admin, new_admin) = env_after_admin_transfer();
+    let (env, id, admin, new_admin, _threshold_admin) = env_after_admin_transfer();
     let client = ComplyRailClient::new(&env, &id);
     assert_eq!(client.admin(), new_admin);
     assert_ne!(client.admin(), admin);
@@ -863,9 +1015,62 @@ fn previous_admin_loses_registry_and_threshold_rights() {
     assert_eq!(client.get_threshold(&token, &s(&env, "US")), 0);
 }
 
+// ----- role separation -----------------------------------------------------
+
+/// Registers a contract with no blanket auth mocking, so each test decides
+/// exactly which role has signed a given call.
+fn role_env() -> (Env, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), None::<u64>),
+    );
+    (env, id, admin, threshold_admin, sac.address())
+}
+
 #[test]
-fn new_admin_can_register_and_set_threshold() {
-    let (env, id, _admin, new_admin) = env_after_admin_transfer();
+fn threshold_admin_can_set_threshold() {
+    let (env, id, _admin, thr, token) = role_env();
+    env.mock_auths(&[MockAuth {
+        address: &thr,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "set_threshold",
+            args: (token.clone(), s(&env, "US"), 3_000i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let client = ComplyRailClient::new(&env, &id);
+    client.set_threshold(&token, &s(&env, "US"), &3_000);
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 3_000);
+}
+
+#[test]
+fn admin_cannot_set_threshold() {
+    let (env, id, admin, _thr, token) = role_env();
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "set_threshold",
+            args: (token.clone(), s(&env, "US"), 1i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let client = ComplyRailClient::new(&env, &id);
+    assert!(client
+        .try_set_threshold(&token, &s(&env, "US"), &1)
+        .is_err());
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 0);
+}
+
+#[test]
+fn new_admin_registers_vasp_and_threshold_admin_sets_threshold() {
+    let (env, id, _admin, new_admin, threshold_admin) = env_after_admin_transfer();
     let client = ComplyRailClient::new(&env, &id);
 
     let vasp = Address::generate(&env);
@@ -905,7 +1110,7 @@ fn new_admin_can_register_and_set_threshold() {
         sub_invokes: &[],
     };
     env.mock_auths(&[MockAuth {
-        address: &new_admin,
+        address: &threshold_admin,
         invoke: &inv,
     }]);
     client.set_threshold(&token, &s(&env, "US"), &100);
@@ -947,4 +1152,83 @@ fn max_ttl_makes_submission_fail_without_side_effects() {
     assert_eq!(t.client.payment_count(), 0);
     assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
     assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn threshold_admin_cannot_register_vasp() {
+    let (env, id, _admin, thr, _token) = role_env();
+    let vasp = Address::generate(&env);
+    env.mock_auths(&[MockAuth {
+        address: &thr,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "register_vasp",
+            args: (
+                vasp.clone(),
+                s(&env, "Acme"),
+                s(&env, "US"),
+                key(&env, 1),
+                None::<u64>,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let client = ComplyRailClient::new(&env, &id);
+    assert!(client
+        .try_register_vasp(
+            &vasp,
+            &s(&env, "Acme"),
+            &s(&env, "US"),
+            &key(&env, 1),
+            &None
+        )
+        .is_err());
+    assert!(!client.is_vasp_active(&vasp));
+}
+
+#[test]
+fn admin_cannot_remove_threshold() {
+    let t = setup();
+    // seed a per-jurisdiction threshold, then try to remove it as the admin
+    let env = &t.env;
+    env.mock_auths(&[MockAuth {
+        address: &t.admin,
+        invoke: &MockAuthInvoke {
+            contract: &t.client.address,
+            fn_name: "remove_threshold",
+            args: (t.token.address.clone(), s(env, "US")).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(t
+        .client
+        .try_remove_threshold(&t.token.address, &s(env, "US"))
+        .is_err());
+    assert_eq!(
+        t.client.get_threshold(&t.token.address, &s(env, "US")),
+        3_000
+    );
+}
+
+#[test]
+fn threshold_admin_can_remove_threshold() {
+    let t = setup();
+    t.client
+        .remove_threshold(&t.token.address, &s(&t.env, "US"));
+    // no "*" fallback configured, so the jurisdiction now fails closed
+    assert_eq!(
+        t.client.get_threshold(&t.token.address, &s(&t.env, "US")),
+        0
+    );
+}
+
+#[test]
+fn removing_missing_threshold_fails() {
+    let t = setup();
+    assert_eq!(
+        t.client
+            .try_remove_threshold(&t.token.address, &s(&t.env, "SG")),
+        Err(Ok(Error::ThresholdNotFound))
+    );
 }

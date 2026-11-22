@@ -253,6 +253,10 @@ export async function isVaspActive(address: string): Promise<boolean> {
   return read<boolean>('is_vasp_active', { address })
 }
 
+export async function getThresholdAdmin(): Promise<string> {
+  return read<string>('threshold_admin')
+}
+
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
   const raws = await mapLimit(addresses, RPC_CONCURRENCY, address => read<RawVasp>('get_vasp', { address }))
@@ -420,8 +424,8 @@ export function registerVasp(
   })
 }
 
-export function setVaspStatus(signer: Signer, address: string, status: VaspStatus) {
-  return write<void>(signer, 'set_vasp_status', { address, status: vaspStatusArg(status) })
+export function setVaspStatus(signer: Signer, address: string, status: VaspStatus, reason: string) {
+  return write<void>(signer, 'set_vasp_status', { address, status: vaspStatusArg(status), reason })
 }
 
 export function setVaspExpiry(signer: Signer, address: string, expiresAt?: number) {

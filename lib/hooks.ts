@@ -131,6 +131,15 @@ export function useAuditEvents() {
   }
 }
 
+export function useThresholdAdmin(address?: string) {
+  const q = useContractQuery<boolean>(
+    async () => !!address && (await api.getThresholdAdmin()) === address,
+    false,
+    `threshold-admin:${address ?? ''}`,
+  )
+  return { isThresholdAdmin: q.data, loading: q.loading }
+}
+
 export function useAdmin() {
   const q = useContractQuery<string | null>(api.getAdmin, null, 'admin')
   return { admin: q.data, loading: q.loading, error: q.error }
