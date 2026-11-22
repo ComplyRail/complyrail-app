@@ -1,4 +1,5 @@
-export type Role = 'admin' | 'vasp' | 'viewer'
+/** `inactive-vasp`: registered, but suspended, revoked or expired. Has no VASP actions. */
+export type Role = 'admin' | 'vasp' | 'inactive-vasp' | 'viewer'
 
 export interface Permission {
   canRegisterVasp: boolean
@@ -28,6 +29,16 @@ export const rolePermissions: Record<Role, Permission> = {
     canSetThreshold: false,
     canSubmitPayment: true,
     canSubmitAttestation: true,
+    canReleasePayment: false,
+    canRejectPayment: false,
+    canExportAuditLog: true,
+  },
+  'inactive-vasp': {
+    canRegisterVasp: false,
+    canUpdateVaspStatus: false,
+    canSetThreshold: false,
+    canSubmitPayment: false,
+    canSubmitAttestation: false,
     canReleasePayment: false,
     canRejectPayment: false,
     canExportAuditLog: true,

@@ -44,7 +44,7 @@ export function Header() {
             {address ? (
               <>
                 <div className="hidden sm:block px-3 py-2 bg-accent/10 rounded text-sm font-mono" title={address}>
-                  {formatAddress(address)} · {role}
+                  {formatAddress(address)} · {role === 'inactive-vasp' ? 'inactive VASP' : role}
                 </div>
                 <button onClick={disconnect} className="px-4 py-2 rounded border border-border hover:bg-muted text-sm">
                   Disconnect
