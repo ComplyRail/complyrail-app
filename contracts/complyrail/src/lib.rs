@@ -52,6 +52,9 @@ pub const MAX_VASP_PAGE: u32 = 100;
 /// Upper bound on how many payment ids one `refund_pending_for_vasp` call scans.
 pub const MAX_REFUND_BATCH: u64 = 100;
 
+/// Upper bound on the number of ids a single `payments_for_vasp` call returns.
+pub const MAX_PAGE_SIZE: u32 = 100;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -187,6 +190,14 @@ enum DataKey {
     Threshold(Address, String),
     ThresholdHistory(Address, String),
     Payment(u64),
+    /// Ids of every payment this VASP originated or is the recipient of, in
+    /// submission order.
+    VaspPayments(Address),
+    /// Ids of payments currently held in escrow, in submission order.
+    PendingPayments,
+    /// Reverse lookup from an attestation hash to the payment that first
+    /// recorded it.
+    AttestationOwner(BytesN<32>),
     /// Per-(originator, asset) cap on value held in escrow.
     ExposureCap(Address, Address),
     /// Smallest payment accepted for an asset.
@@ -407,6 +418,60 @@ fn set_exposure(env: &Env, vasp: &Address, asset: &Address, amount: i128) {
     bump_persistent(env, &key);
 }
 
+fn index_vasp_payment(env: &Env, vasp: &Address, payment_id: u64) {
+    let key = DataKey::VaspPayments(vasp.clone());
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(payment_id);
+    env.storage().persistent().set(&key, &ids);
+    bump_persistent(env, &key);
+}
+
+fn pending_index_add(env: &Env, payment_id: u64) {
+    let key = DataKey::PendingPayments;
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(payment_id);
+    env.storage().persistent().set(&key, &ids);
+    bump_persistent(env, &key);
+}
+
+fn pending_index_remove(env: &Env, payment_id: u64) {
+    let key = DataKey::PendingPayments;
+    let Some(ids) = env.storage().persistent().get::<_, Vec<u64>>(&key) else {
+        return;
+    };
+    let mut kept = Vec::new(env);
+    for id in ids.iter() {
+        if id != payment_id {
+            kept.push_back(id);
+        }
+    }
+    env.storage().persistent().set(&key, &kept);
+    bump_persistent(env, &key);
+}
+
+/// Returns at most `min(limit, MAX_PAGE_SIZE)` entries of `ids` starting at
+/// offset `start`. An out-of-range `start` yields an empty Vec.
+fn page_of(env: &Env, ids: &Vec<u64>, start: u32, limit: u32) -> Vec<u64> {
+    let mut page = Vec::new(env);
+    let end = start
+        .saturating_add(limit.min(MAX_PAGE_SIZE))
+        .min(ids.len());
+    let mut i = start;
+    while i < end {
+        page.push_back(ids.get(i).unwrap());
+        i += 1;
+    }
+    page
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     if p.requires_attestation {
@@ -418,6 +483,9 @@ fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     p.resolved_at = Some(env.ledger().timestamp());
     p.resolved_ledger = Some(env.ledger().sequence());
     save_payment(env, p);
+    // Every resolution leaves the pending queue. Instantly settled payments
+    // were never in it, so this is a no-op for them.
+    pending_index_remove(env, p.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1052,9 @@ impl ComplyRail {
             resolved_ledger: None,
         };
 
+        index_vasp_payment(&env, &from_vasp, id);
+        index_vasp_payment(&env, &to_vasp, id);
+
         PaymentSubmitted {
             id,
             from_vasp,
@@ -998,6 +1069,7 @@ impl ComplyRail {
             let held = exposure(&env, &p.from_vasp, &p.asset);
             set_exposure(&env, &p.from_vasp, &p.asset, held + p.amount);
             save_payment(&env, &p);
+            pending_index_add(&env, id);
         } else {
             settle(&env, &mut p, &beneficiary, PaymentStatus::Released);
             PaymentReleased {
@@ -1028,6 +1100,13 @@ impl ComplyRail {
         p.ivms_version = Some(ivms_version.clone());
         p.attested_at = Some(env.ledger().timestamp());
         save_payment(&env, &p);
+        // The first payment to record a hash keeps the reverse lookup, so a
+        // later payment reusing the same hash cannot take it over.
+        let owner_key = DataKey::AttestationOwner(attestation_hash.clone());
+        if !env.storage().persistent().has(&owner_key) {
+            env.storage().persistent().set(&owner_key, &payment_id);
+            bump_persistent(&env, &owner_key);
+        }
         AttestationSubmitted {
             id: payment_id,
             hash: attestation_hash,
@@ -1187,6 +1266,40 @@ impl ComplyRail {
 
     pub fn get_payment(env: Env, payment_id: u64) -> Result<Payment, Error> {
         load_payment(&env, payment_id)
+    }
+
+    /// Payment ids in which `vasp` is either originator or beneficiary, in
+    /// submission order. Returns at most `min(limit, MAX_PAGE_SIZE)` ids
+    /// starting at offset `start`; an out-of-range `start` yields an empty Vec.
+    pub fn payments_for_vasp(env: Env, vasp: Address, start: u32, limit: u32) -> Vec<u64> {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaspPayments(vasp))
+            .unwrap_or_else(|| Vec::new(&env));
+        page_of(&env, &ids, start, limit)
+    }
+
+    /// The payment that first recorded `attestation_hash`, if any. Lets a VASP
+    /// that holds an IVMS101 payload find the payment it belongs to.
+    pub fn find_payment_by_attestation(env: Env, attestation_hash: BytesN<32>) -> Option<u64> {
+        let key = DataKey::AttestationOwner(attestation_hash);
+        let id: Option<u64> = env.storage().persistent().get(&key);
+        if id.is_some() {
+            bump_persistent(&env, &key);
+        }
+        id
+    }
+
+    /// Payment ids currently held in escrow (awaiting attestation and/or
+    /// release), in submission order. Paged like `payments_for_vasp`.
+    pub fn list_pending(env: Env, start: u32, limit: u32) -> Vec<u64> {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingPayments)
+            .unwrap_or_else(|| Vec::new(&env));
+        page_of(&env, &ids, start, limit)
     }
 
     /// Number of payments ever submitted (ids are `0..payment_count`).
