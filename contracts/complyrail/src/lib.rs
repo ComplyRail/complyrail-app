@@ -64,6 +64,8 @@ pub const MIN_PAYMENT_TTL: u64 = 60 * 60;
 pub const MAX_PAYMENT_TTL: u64 = 90 * 24 * 60 * 60;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
+/// Stellar closes a ledger roughly every 5 seconds.
+const LEDGER_SECONDS: u64 = 5;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BUMP_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 
@@ -86,6 +88,9 @@ pub enum Error {
     AttestationAlreadySubmitted = 10,
     Unauthorized = 11,
     PaymentNotExpired = 12,
+    /// The payment's `expires_at` has passed: it can no longer be attested
+    /// or released, only reclaimed by the originator.
+    PaymentExpired = 36,
     /// The contract received a different amount than the one requested,
     /// e.g. the token charges a transfer fee.
     ReceivedAmountMismatch = 32,
@@ -253,16 +258,42 @@ pub struct ComplyRail;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// How many ledgers a held payment must stay live after its last write:
+/// the configured `payment_ttl` (so the originator can always reach the
+/// reclaim window) plus the usual 30-day buffer. Never less than `BUMP_AMOUNT`.
+fn payment_bump_amount(env: &Env) -> u32 {
+    let ttl_secs: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::PaymentTtl)
+        .unwrap_or(DEFAULT_PAYMENT_TTL);
+    let ttl_ledgers = ttl_secs / LEDGER_SECONDS + 1;
+    let total = ttl_ledgers.saturating_add(u64::from(BUMP_AMOUNT));
+    u32::try_from(total).unwrap_or(u32::MAX).max(BUMP_AMOUNT)
+}
+
+/// The contract instance holds the TTL config and VASP list, so it must
+/// outlive every payment; it is extended to the same horizon.
 fn bump_instance(env: &Env) {
+    let amount = payment_bump_amount(env);
     env.storage()
         .instance()
-        .extend_ttl(BUMP_THRESHOLD, BUMP_AMOUNT);
+        .extend_ttl(amount - DAY_IN_LEDGERS, amount);
 }
 
 fn bump_persistent(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, BUMP_THRESHOLD, BUMP_AMOUNT);
+}
+
+/// Payments are bumped to `payment_bump_amount` so an untouched Pending
+/// payment is never archived before its reclaim window opens.
+fn bump_payment(env: &Env, key: &DataKey) {
+    let amount = payment_bump_amount(env);
+    env.storage()
+        .persistent()
+        .extend_ttl(key, amount - DAY_IN_LEDGERS, amount);
 }
 
 fn admin(env: &Env) -> Result<Address, Error> {
@@ -361,14 +392,14 @@ fn load_payment(env: &Env, id: u64) -> Result<Payment, Error> {
         .persistent()
         .get(&key)
         .ok_or(Error::PaymentNotFound)?;
-    bump_persistent(env, &key);
+    bump_payment(env, &key);
     Ok(p)
 }
 
 fn save_payment(env: &Env, p: &Payment) {
     let key = DataKey::Payment(p.id);
     env.storage().persistent().set(&key, p);
-    bump_persistent(env, &key);
+    bump_payment(env, &key);
 }
 
 fn max_open_per_vasp(env: &Env) -> u32 {
@@ -752,6 +783,9 @@ pub struct PaymentReleased {
     pub asset: Address,
     pub amount: i128,
     pub resolved_ledger: u32,
+    /// Address that performed the release: the beneficiary VASP, the admin
+    /// override, or the originator for below-threshold auto-settlement.
+    pub by: Address,
 }
 
 #[contractevent(topics = ["pay_qry"])]
@@ -773,6 +807,9 @@ pub struct PaymentRejected {
     /// `reject_payment` for the expected format). `None` for expiry reclaims.
     pub evidence_hash: Option<BytesN<32>>,
     pub resolved_ledger: u32,
+    /// Address that performed the rejection (or the originator for an expiry
+    /// reclaim).
+    pub by: Address,
 }
 
 #[contractevent(topics = ["pay_canc"])]
@@ -1368,6 +1405,7 @@ impl ComplyRail {
                 id,
                 asset: p.asset.clone(),
                 amount,
+                by: p.from_vasp.clone(),
                 resolved_ledger: env.ledger().sequence(),
             }
             .publish(&env);
@@ -1386,6 +1424,9 @@ impl ComplyRail {
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
         require_pending(&p)?;
+        if env.ledger().timestamp() >= p.expires_at {
+            return Err(Error::PaymentExpired);
+        }
         if p.attestation_hash.is_some() {
             return Err(Error::AttestationAlreadySubmitted);
         }
@@ -1480,6 +1521,11 @@ impl ComplyRail {
         if caller != p.to_vasp && caller != admin_addr {
             return Err(Error::Unauthorized);
         }
+        // Release window closes exactly at `expires_at`; from that ledger on
+        // only `reclaim_expired` can settle the payment (see contracts/README.md).
+        if env.ledger().timestamp() >= p.expires_at {
+            return Err(Error::PaymentExpired);
+        }
         // Re-check the beneficiary VASP at release time: it may have been
         // suspended, revoked or expired after the payment was submitted.
         // This applies to the admin override too; the admin cannot release
@@ -1510,6 +1556,7 @@ impl ComplyRail {
             asset: p.asset.clone(),
             amount: p.amount,
             resolved_ledger: env.ledger().sequence(),
+            by: caller,
         }
         .publish(&env);
         Ok(())
@@ -1566,6 +1613,7 @@ impl ComplyRail {
             reason,
             evidence_hash,
             resolved_ledger: env.ledger().sequence(),
+                    by: caller,
         }
         .publish(&env);
         Ok(())
@@ -1589,6 +1637,7 @@ impl ComplyRail {
             reason: String::from_str(&env, "expired"),
             evidence_hash: None,
             resolved_ledger: env.ledger().sequence(),
+                    by: p.from_vasp.clone(),
         }
         .publish(&env);
         Ok(())
@@ -1613,6 +1662,7 @@ impl ComplyRail {
             reason: String::from_str(&env, "receiver_inactive"),
             evidence_hash: None,
             resolved_ledger: env.ledger().sequence(),
+                    by: p.from_vasp.clone(),
         }
         .publish(&env);
         Ok(())
@@ -1657,7 +1707,8 @@ impl ComplyRail {
                         reason: String::from_str(&env, "receiver_inactive"),
                         evidence_hash: None,
                         resolved_ledger: env.ledger().sequence(),
-                    }
+                                by: admin(&env)?,
+        }
                     .publish(&env);
                 }
             }

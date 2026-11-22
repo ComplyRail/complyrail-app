@@ -4,7 +4,9 @@ use super::*;
 use soroban_sdk::{testutils::Events as _, xdr};
 use soroban_sdk::{panic_with_error, symbol_short};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
+    testutils::{
+        storage::Instance as _, storage::Persistent as _, Address as _, Ledger, MockAuth, MockAuthInvoke,
+    },
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env, Event, IntoVal, String, TryFromVal, Val,
 };
@@ -1243,7 +1245,7 @@ fn release_blocked_after_beneficiary_vasp_expires() {
 // ----- races around payment expiry (#63) -----------------------------------
 
 #[test]
-fn release_then_reclaim_at_expiry_leaves_one_terminal_state() {
+fn release_at_expiry_is_refused_and_reclaim_settles() {
     let t = setup();
     let id = submit_held(&t);
     t.client
@@ -1251,17 +1253,22 @@ fn release_then_reclaim_at_expiry_leaves_one_terminal_state() {
     let expires_at = t.client.get_payment(&id).expires_at;
     t.env.ledger().set_timestamp(expires_at);
 
+    // The release window closes exactly at expires_at; only reclaim can settle now.
     t.client.acknowledge_attestation(&id);
-    t.client.release_payment(&id, &t.vasp_b);
-    // Reclaim at the same ledger time must not run after the release.
     assert_eq!(
-        t.client.try_reclaim_expired(&id),
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentExpired))
+    );
+    t.client.reclaim_expired(&id);
+    // A release after the reclaim finds the payment no longer pending.
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
         Err(Ok(Error::PaymentNotPending))
     );
 
-    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
-    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
-    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000 - 5_000);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
     assert_eq!(t.token.balance(&t.client.address), 0);
 }
 
@@ -1286,20 +1293,20 @@ fn reclaim_then_release_at_expiry_leaves_one_terminal_state() {
 }
 
 #[test]
-fn attest_at_expiry_is_recorded_but_payment_stays_pending() {
+fn attest_at_expiry_is_refused_and_payment_stays_pending() {
     let t = setup();
     let id = submit_held(&t);
     let expires_at = t.client.get_payment(&id).expires_at;
     t.env.ledger().set_timestamp(expires_at);
 
-    // Current behaviour: attestation is not gated on expiry.
-    t.client
-        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
-
+    assert_eq!(
+        t.client
+            .try_submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023")),
+        Err(Ok(Error::PaymentExpired))
+    );
     let p = t.client.get_payment(&id);
     assert_eq!(p.status, PaymentStatus::Pending);
-    assert_eq!(p.attestation_hash, Some(key(&t.env, 7)));
-    assert_eq!(p.attested_at, Some(expires_at));
+    assert_eq!(p.attestation_hash, None);
     assert_eq!(t.token.balance(&t.client.address), 5_000);
 }
 
@@ -1782,6 +1789,7 @@ fn reject_with_evidence_hash_emits_it() {
             reason,
             evidence_hash: Some(key(&t.env, 9)),
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_b.clone(),
         },
     );
 }
@@ -1871,6 +1879,7 @@ fn reject_without_evidence_hash_emits_none() {
             reason,
             evidence_hash: None,
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_b.clone(),
         },
     );
 }
@@ -1895,6 +1904,7 @@ fn expiry_reclaim_emits_no_evidence_hash() {
             reason: s(&t.env, "expired"),
             evidence_hash: None,
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_a.clone(),
         },
     );
 }
@@ -2833,6 +2843,7 @@ fn submit_below_threshold_events_are_self_describing() {
             asset: t.token.address.clone(),
             amount: 2_999,
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_a.clone(),
         },
     ));
     assert_eq!(events_of(&t), expected);
@@ -2876,6 +2887,7 @@ fn release_event_carries_asset() {
             asset: t.token.address.clone(),
             amount: 5_000,
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_b.clone(),
         },
     ));
     assert_eq!(events_of(&t), expected);
@@ -2902,6 +2914,7 @@ fn reject_event_carries_asset() {
             reason: s(&t.env, "bad data"),
             evidence_hash: None,
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_b.clone(),
         },
     ));
     assert_eq!(events_of(&t), expected);
@@ -2929,6 +2942,7 @@ fn reclaim_event_carries_asset() {
             reason: s(&t.env, "expired"),
             evidence_hash: None,
             resolved_ledger: t.env.ledger().sequence(),
+                    by: t.vasp_a.clone(),
         },
     ));
     assert_eq!(events_of(&t), expected);
@@ -3390,4 +3404,304 @@ fn only_admin_can_set_ttl() {
     // No mock_all_auths: the admin's auth is required and not provided.
     assert!(client.try_set_payment_ttl(&MIN_PAYMENT_TTL).is_err());
     assert_eq!(client.payment_ttl(), DEFAULT_PAYMENT_TTL);
+}
+
+// ----- release window vs. reclaim window ----------------------------------
+
+#[test]
+fn release_allowed_just_before_expiry() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + DEFAULT_PAYMENT_TTL - 1);
+    t.client.acknowledge_attestation(&id);
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+}
+
+#[test]
+fn release_rejected_at_and_after_expiry_and_reclaim_takes_over() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    // exactly at expiry: beneficiary release is closed, reclaim opens
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentExpired))
+    );
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.admin),
+        Err(Ok(Error::PaymentExpired))
+    );
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+
+    // a later release cannot double-settle the reclaimed payment
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + DEFAULT_PAYMENT_TTL + 60);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+}
+
+#[test]
+fn attest_after_expiry_is_rejected_and_payment_stays_reclaimable() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    // one second before expiry the attestation is still accepted
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + DEFAULT_PAYMENT_TTL - 1);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 7)));
+
+    // a second payment attested only after expiry must be refused
+    let late = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env
+        .ledger()
+        .set_timestamp(1_000 + 2 * DEFAULT_PAYMENT_TTL);
+    let r = t
+        .client
+        .try_submit_attestation(&late, &key(&t.env, 9), &s(&t.env, "IVMS101.2023"));
+    assert_eq!(r, Err(Ok(Error::PaymentExpired)));
+    let p = t.client.get_payment(&late);
+    assert_eq!(p.attestation_hash, None);
+    assert_eq!(p.status, PaymentStatus::Pending);
+
+    // the originator can still reclaim the late payment cleanly
+    t.client.reclaim_expired(&late);
+    assert_eq!(t.client.get_payment(&late).status, PaymentStatus::Reclaimed);
+}
+
+// ----- storage TTL: untouched payments must stay live until reclaim -------
+
+/// Ledgers needed to cover `secs` of wall-clock time at 5 seconds per ledger.
+fn ledgers_for(secs: u64) -> u32 {
+    (secs / 5) as u32
+}
+
+/// Advance the ledger by one day without touching the contract, the way a
+/// quiet network would.
+fn advance_one_day(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 17_280;
+        li.timestamp += 86_400;
+    });
+}
+
+/// Remaining live ledgers of a stored payment.
+fn payment_ttl(env: &Env, contract: &Address, id: u64) -> u32 {
+    env.as_contract(contract, || {
+        env.storage().persistent().get_ttl(&DataKey::Payment(id))
+    })
+}
+
+#[test]
+fn untouched_payment_stays_live_until_expiry_with_long_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token = sac.address();
+    StellarAssetClient::new(&env, &token).mint(&a, &10_000);
+    let ttl_secs = 60 * 86_400u64;
+    let id = env.register(ComplyRail, (admin.clone(), Address::generate(&env), Some(ttl_secs)));
+    let c = ComplyRailClient::new(&env, &id);
+    c.register_vasp(&a, &s(&env, "A"), &s(&env, "US"), &key(&env, 1), &None);
+    c.register_vasp(&b, &s(&env, "B"), &s(&env, "GB"), &key(&env, 2), &None);
+    c.set_threshold(&token, &s(&env, "US"), &1_000);
+    c.set_asset_allowed(&token, &true);
+    let pid = c.submit_payment(&a, &b, &Address::generate(&env), &token, &5_000);
+
+    // Right after submission the entry must outlive the payment's own TTL.
+    assert!(payment_ttl(&env, &id, pid) >= ledgers_for(ttl_secs));
+    assert!(env.as_contract(&id, || env.storage().instance().get_ttl()) >= ledgers_for(ttl_secs));
+
+    // Let the whole TTL pass without any interaction; at every step the
+    // remaining live window must still cover the time left until expiry.
+    for _ in 0..60 {
+        advance_one_day(&env);
+        let left = ledgers_for(
+            c.get_payment(&pid)
+                .expires_at
+                .saturating_sub(env.ledger().timestamp()),
+        );
+        assert!(payment_ttl(&env, &id, pid) >= left);
+    }
+
+    c.reclaim_expired(&pid);
+    assert_eq!(c.get_payment(&pid).status, PaymentStatus::Reclaimed);
+    assert_eq!(TokenClient::new(&env, &token).balance(&a), 10_000);
+}
+
+#[test]
+fn untouched_default_payment_stays_live_until_expiry() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert!(payment_ttl(&t.env, &t.client.address, id) >= ledgers_for(DEFAULT_PAYMENT_TTL));
+    for _ in 0..(DEFAULT_PAYMENT_TTL / 86_400) {
+        advance_one_day(&t.env);
+    }
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+}
+
+// ----- audit: actor on release / reject events -----------------------------
+
+// `events().all()` only reports the most recent invocation, so each assertion
+// runs straight after the call it checks.
+fn emitted_by(t: &Setup, event: &impl Event) -> bool {
+    let xdr = event.to_xdr(&t.env, &t.client.address);
+    t.env
+        .events()
+        .all()
+        .filter_by_contract(&t.client.address)
+        .events()
+        .contains(&xdr)
+}
+
+#[test]
+fn admin_override_release_is_distinguishable_from_beneficiary_release() {
+    let t = setup();
+    let a = &t.token.address;
+    let by_admin = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    let by_beneficiary = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    for id in [by_admin, by_beneficiary] {
+        t.client
+            .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    }
+
+    t.client.release_payment(&by_admin, &t.admin);
+    assert!(emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_admin,
+            amount: 5_000,
+            by: t.admin.clone(),
+                    asset: t.token.address.clone(),
+            resolved_ledger: t.env.ledger().sequence(),
+        }
+    ));
+    assert!(!emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_admin,
+            amount: 5_000,
+            by: t.vasp_b.clone(),
+                    asset: t.token.address.clone(),
+            resolved_ledger: t.env.ledger().sequence(),
+        }
+    ));
+
+    t.client.acknowledge_attestation(&by_beneficiary);
+    t.client.release_payment(&by_beneficiary, &t.vasp_b);
+    assert!(emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_beneficiary,
+            amount: 5_000,
+            by: t.vasp_b.clone(),
+                    asset: t.token.address.clone(),
+            resolved_ledger: t.env.ledger().sequence(),
+        }
+    ));
+    assert!(!emitted_by(
+        &t,
+        &PaymentReleased {
+            id: by_beneficiary,
+            amount: 5_000,
+            by: t.admin.clone(),
+                    asset: t.token.address.clone(),
+            resolved_ledger: t.env.ledger().sequence(),
+        }
+    ));
+}
+
+#[test]
+fn reject_and_reclaim_events_record_actor() {
+    let t = setup();
+    let a = &t.token.address;
+    let rejected = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    t.client
+        .reject_payment(&rejected, &t.admin, &s(&t.env, "sanctions hit"), &None);
+    assert!(emitted_by(
+        &t,
+        &PaymentRejected {
+            id: rejected,
+            reason: s(&t.env, "sanctions hit"),
+            by: t.admin.clone(),
+                    asset: t.token.address.clone(),
+            resolved_ledger: t.env.ledger().sequence(),
+            evidence_hash: None,
+        }
+    ));
+
+    let reclaimed = t
+        .client
+        .submit_payment(&t.vasp_a, &t.vasp_b, &t.beneficiary, a, &5_000);
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&reclaimed);
+    assert!(emitted_by(
+        &t,
+        &PaymentRejected {
+            id: reclaimed,
+            reason: s(&t.env, "expired"),
+            by: t.vasp_a.clone(),
+                    asset: t.token.address.clone(),
+            resolved_ledger: t.env.ledger().sequence(),
+            evidence_hash: None,
+        }
+    ));
 }
