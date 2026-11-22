@@ -75,6 +75,64 @@ stellar contract build                             # builds the WASM
 
 Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) **v30.0.1** (the same version the GitHub workflows pin; `soroban-sdk` 29 must be built with `stellar contract build`). `contracts/scripts/deploy-testnet.sh` checks the installed version and exits if it does not match.
 
+## WASM size budget
+
+CI records the size of the release WASM in the job summary and fails if it grows more than 5% over `contracts/complyrail/wasm-size-baseline.txt`. The file holds the size in bytes of the last accepted build.
+
+When a change makes the contract bigger on purpose, update the baseline in the same PR:
+
+```bash
+cd contracts/complyrail
+stellar contract build
+stat -c %s target/wasm32v1-none/release/complyrail.wasm > wasm-size-baseline.txt
+```
+
+Explain the growth in the PR description.
+
+## Dependency advisories
+
+CI runs `cargo deny check advisories` against the RustSec database on every change to the contract. The policy lives in `contracts/complyrail/deny.toml`.
+
+- **Failing:** any vulnerability advisory fails the job, whatever its severity. Unmaintained crates that are direct dependencies also fail.
+- **Run locally:** `cd contracts/complyrail && cargo deny check advisories` (install with `cargo install cargo-deny --locked`).
+
+**Exception process.** To accept an advisory that cannot be fixed yet:
+
+1. Confirm the advisory is not reachable from the contract, or that no fixed release can be selected. Check `cargo tree -i <crate>`.
+2. Add an entry to `ignore` in `deny.toml` with the advisory ID and a `reason` that names the path and the blocker.
+3. Note the exception and its review trigger (for example, the next `soroban-sdk` bump) in the PR description.
+4. Get a second maintainer to approve the PR. Remove the entry as soon as a fix is available.
+
+## Reproducible builds
+
+Anyone can rebuild the deployed WASM from this repository and check its hash. Three inputs are pinned:
+
+| Input | Pinned to | Where |
+|---|---|---|
+| Rust toolchain | 1.99.1 | `complyrail/rust-toolchain.toml`, and the CI and deploy workflows |
+| Stellar CLI | 30.0.1 | `stellar/stellar-cli@v30.0.1` in the workflows. Its version is embedded in the WASM as `cliver`. |
+| Dependencies | exact versions | `complyrail/Cargo.lock` |
+
+To verify the testnet deployment:
+
+```bash
+# 1. Check out the commit recorded in deployments/testnet.json
+git checkout "$(jq -r .commit contracts/deployments/testnet.json)"
+
+# 2. Build with stellar-cli 30.0.1. rustup selects Rust 1.99.1 from rust-toolchain.toml.
+cd contracts/complyrail
+stellar contract build
+sha256sum target/wasm32v1-none/release/complyrail.wasm
+
+# 3. Compare with the deployed WASM
+stellar contract fetch --id "$(jq -r .contractId ../deployments/testnet.json)" --network testnet -o deployed.wasm
+sha256sum deployed.wasm
+```
+
+Both hashes should match `wasmHash` in `deployments/testnet.json`. CI builds the contract twice from a clean target directory on every change and fails if the two hashes differ.
+
+If you change the toolchain or the CLI version, rebuild, confirm the hash, and update the pins in all three places above together. Also refresh `wasm-size-baseline.txt`.
+
 ## Deploy to testnet
 
 ```bash

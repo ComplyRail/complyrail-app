@@ -1,0 +1,24 @@
+# cargo-deny policy for the ComplyRail contract.
+#
+# Run locally with:  cargo deny check advisories
+# CI runs the same check in .github/workflows/contracts.yml.
+#
+# Any vulnerability advisory fails the job, whatever its severity. That is
+# stricter than the "high or above" target in issue #67, because cargo-deny
+# cannot filter by severity (advisories without a CVSS score have no severity
+# to filter on). Unmaintained checks cover direct dependencies only, so
+# transitive unmaintained crates such as paste do not fail the job.
+#
+# Exception process: see "Dependency advisories" in ../README.md.
+
+[advisories]
+version = 2
+unmaintained = "workspace"
+ignore = [
+    # Transitive dependency of soroban-sdk 29.0.1 (via elliptic-curve 0.13.8,
+    # which pins crypto-bigint ^0.5). The fixed release (0.7.6) cannot be
+    # selected until soroban-sdk moves off that elliptic-curve line. The
+    # contract does no secret-key arithmetic on-chain. Review on each
+    # soroban-sdk bump. Owner: contracts maintainers.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via soroban-sdk 29.0.1; no fixed release reachable until soroban-sdk upgrade" },
+]
