@@ -1,8 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { useAdmin, usePayment, useVasp } from '@/lib/hooks'
+import { useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
+import { IvmsDecryptPanel } from './IvmsDecryptPanel'
+import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { assetSymbol } from '@/lib/config'
@@ -15,17 +17,20 @@ import {
   sha256Hex,
   submitAttestation,
 } from '@/lib/contract'
-import { PaymentStatus } from '@/lib/types'
+import { sealIvmsPayload } from '@/lib/ivms-crypto'
+import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
 
 export function PaymentDetail({ id }: { id: string }) {
   const { payment, loading, error, reload } = usePayment(id)
+  const clock = useLedgerClock()
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
   const { admin } = useAdmin()
   const { address } = useWallet()
   const tx = useTx()
-  const [names, setNames] = useState({ originator: '', beneficiary: '' })
-  const [payloadJson, setPayloadJson] = useState<string | null>(null)
+  const [names, setNames] = useState({ originator: '', originatorAccount: '', beneficiary: '' })
+  const [envelope, setEnvelope] = useState<string | null>(null)
+  const [sealError, setSealError] = useState<string | null>(null)
   const [reason, setReason] = useState('')
 
   if (loading) return <Shell><div className="text-center text-muted-foreground">Loading from contract…</div></Shell>
@@ -35,7 +40,7 @@ export function PaymentDetail({ id }: { id: string }) {
   const isOriginator = address === payment.fromVasp
   const canResolve = !!address && (address === payment.toVasp || address === admin)
   const needsAttestation = payment.requiresAttestation && !payment.attestationHash
-  const expired = Date.now() / 1000 >= payment.expiresAt
+  const expired = clock.now >= payment.expiresAt
 
   const act = async (label: string, fn: Parameters<typeof tx.run>[1]) => {
     const ok = await tx.run(label, async s => {
@@ -50,16 +55,32 @@ export function PaymentDetail({ id }: { id: string }) {
     const payload = buildIvmsPayload({
       paymentId: payment.id,
       originatorName: names.originator,
-      originatorAccount: payment.fromVasp,
+      originatorAccount: names.originatorAccount,
       beneficiaryName: names.beneficiary,
       beneficiaryAccount: payment.beneficiary,
       amount: fromUnits(payment.amount),
       asset: assetSymbol(payment.asset),
     })
+    const recipientKey = toVasp.vasp?.publicKey
+    if (!recipientKey) {
+      setSealError('The receiving VASP has no registered encryption key, so the payload cannot be encrypted.')
+      return
+    }
+    setSealError(null)
     const json = JSON.stringify(payload)
     const hash = await sha256Hex(json)
-    setPayloadJson(JSON.stringify(payload, null, 2))
-    await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, 'IVMS101.2023'))
+    setEnvelope(await sealIvmsPayload(json, recipientKey))
+    await act('Attestation recorded on-chain', s => submitAttestation(s, payment.id, hash, IVMS101_VERSION))
+  }
+
+  const downloadEnvelope = () => {
+    if (!envelope) return
+    const url = URL.createObjectURL(new Blob([envelope], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ivms-payment-${payment.id}.enc.json`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -104,6 +125,8 @@ export function PaymentDetail({ id }: { id: string }) {
         </Card>
       )}
 
+      <ClockWarning clock={clock} />
+
       <div className="my-4"><TxStatus {...tx} /></div>
 
       {pending && isOriginator && needsAttestation && (
@@ -117,6 +140,9 @@ export function PaymentDetail({ id }: { id: string }) {
             <input required placeholder="Originator full name" value={names.originator}
               onChange={e => setNames({ ...names, originator: e.target.value })}
               className="px-3 py-2 border border-border rounded bg-background" />
+            <input required placeholder="Originator account (customer account number)" value={names.originatorAccount}
+              onChange={e => setNames({ ...names, originatorAccount: e.target.value })}
+              className="px-3 py-2 border border-border rounded bg-background" />
             <input required placeholder="Beneficiary full name" value={names.beneficiary}
               onChange={e => setNames({ ...names, beneficiary: e.target.value })}
               className="px-3 py-2 border border-border rounded bg-background" />
@@ -125,13 +151,24 @@ export function PaymentDetail({ id }: { id: string }) {
             className="w-full px-4 py-2 rounded bg-blue-600 text-white hover:opacity-90 disabled:opacity-50">
             Hash & submit attestation
           </button>
-          {payloadJson && (
-            <details className="text-xs">
-              <summary className="cursor-pointer">Payload that was hashed</summary>
-              <pre className="mt-2 p-3 bg-muted rounded overflow-x-auto">{payloadJson}</pre>
-            </details>
+          {sealError && <p className="text-sm text-red-600">{sealError}</p>}
+          {envelope && (
+            <div className="text-xs space-y-2">
+              <p className="text-muted-foreground">
+                Encrypted to the receiving VASP&apos;s key. Download it and send it to them; the plaintext is not shown here.
+              </p>
+              <button type="button" onClick={downloadEnvelope}
+                className="px-3 py-1 rounded bg-muted hover:bg-muted/80 font-medium">
+                Download encrypted payload
+              </button>
+              <pre className="p-3 bg-muted rounded overflow-x-auto">{envelope}</pre>
+            </div>
           )}
         </form>
+      )}
+
+      {address === payment.toVasp && payment.attestationHash && toVasp.vasp?.publicKey && (
+        <IvmsDecryptPanel recipientPublicKey={toVasp.vasp.publicKey} attestationHash={payment.attestationHash} />
       )}
 
       {pending && canResolve && (

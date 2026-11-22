@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { useRole, useVasps } from '@/lib/hooks'
+import { useLedgerClock, useRole, useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
+import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { formatAddress } from '@/lib/format'
@@ -15,6 +16,7 @@ const emptyForm = { address: '', name: '', jurisdiction: '', publicKeyHex: '', e
 
 export default function VaspsPage() {
   const { vasps, loading, error, reload } = useVasps()
+  const clock = useLedgerClock()
   const { address } = useWallet()
   const { role } = useRole(address)
   const tx = useTx()
@@ -98,6 +100,8 @@ export default function VaspsPage() {
 
         <div className="mb-4"><TxStatus {...tx} /></div>
 
+        <ClockWarning clock={clock} />
+
         {loading ? (
           <div className="text-center text-muted-foreground py-12">Loading from contract…</div>
         ) : error ? (
@@ -122,7 +126,7 @@ export default function VaspsPage() {
                 </thead>
                 <tbody>
                   {vasps.map(vasp => {
-                    const now = Date.now() / 1000
+                    const now = clock.now
                     const isExpired = !!vasp.expiresAt && now >= vasp.expiresAt
                     const daysLeft = vasp.expiresAt ? Math.ceil((vasp.expiresAt - now) / 86400) : null
                     return (
