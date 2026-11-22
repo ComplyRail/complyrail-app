@@ -8,7 +8,7 @@ import { formatAddress, fromUnits } from '@/lib/format'
 import { PaymentStatus } from '@/lib/types'
 
 export default function PaymentsPage() {
-  const { payments, loading, error } = usePayments()
+  const { payments, total, hasMore, loadMore, loadingMore, moreError, loading, error } = usePayments()
 
   const count = (s: PaymentStatus) => payments.filter(p => p.status === s).length
   const awaitingAttestation = payments.filter(
@@ -29,11 +29,14 @@ export default function PaymentsPage() {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <Stat label="Total" value={payments.length} />
+          <Stat label="Total" value={total} />
           <Stat label="Pending" value={count(PaymentStatus.Pending)} className="text-yellow-600" />
           <Stat label="Awaiting attestation" value={awaitingAttestation} className="text-orange-600" />
           <Stat label="Released" value={count(PaymentStatus.Released)} className="text-green-600" />
         </div>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Status counts cover the {payments.length} loaded payment{payments.length === 1 ? '' : 's'}.
+        </p>
 
         {loading ? (
           <div className="text-center text-muted-foreground py-12">Loading from contract…</div>
@@ -73,6 +76,16 @@ export default function PaymentsPage() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {hasMore && (
+          <div className="mt-4 flex flex-col items-center gap-2">
+            <button onClick={loadMore} disabled={loadingMore}
+              className="px-4 py-2 rounded border border-border bg-card hover:bg-muted disabled:opacity-50">
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+            {moreError && <p className="text-sm text-red-600">Error: {moreError}</p>}
           </div>
         )}
       </div>

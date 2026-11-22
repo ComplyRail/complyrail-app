@@ -92,6 +92,7 @@ const CONTRACT_ERRORS: Record<number, string> = {
   34: 'Payments and releases are paused by the admin',
   35: 'The payment TTL is outside the allowed range',
   36: 'This payment has expired and can no longer be attested or released; the originator can reclaim it',
+  37: 'There is no pending admin handover to accept or cancel',
 }
 
 export function friendlyError(e: unknown): string {

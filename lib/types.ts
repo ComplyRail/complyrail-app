@@ -55,6 +55,8 @@ export type AuditEventType =
   | 'vasp_upd'
   | 'thr_set'
   | 'admin_chg'
+  | 'adm_prop'
+  | 'adm_acc'
   | 'pay_sub'
   | 'att_sub'
   | 'pay_rel'

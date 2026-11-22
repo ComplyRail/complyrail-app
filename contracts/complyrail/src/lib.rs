@@ -100,6 +100,8 @@ pub enum Error {
     Paused = 34,
     /// Requested TTL is outside [MIN_PAYMENT_TTL, MAX_PAYMENT_TTL].
     InvalidTtl = 35,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no proposal pending.
+    NoPendingAdmin = 37,
     SameVasp = 13,
     InvalidThreshold = 14,
     /// A revoked VASP is terminal and cannot change status again.
@@ -220,6 +222,8 @@ pub struct Payment {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    /// Admin proposed by `propose_admin`, not yet accepted.
+    PendingAdmin,
     ThresholdAdmin,
     PaymentTtl,
     NextPaymentId,
@@ -231,6 +235,8 @@ enum DataKey {
     Threshold(Address, String),
     ThresholdHistory(Address, String),
     Payment(u64),
+    /// Index of `(asset, jurisdiction)` rules whose amount is above zero.
+    ThresholdList,
     AllowedAsset(Address),
     Paused,
     MaxOpenPerVasp,
@@ -249,6 +255,14 @@ enum DataKey {
     MinAmount(Address),
     /// Per-(originator, asset) sum of currently held (pending) amounts.
     Exposure(Address, Address),
+}
+
+/// One configured threshold rule, as stored in the threshold index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdKey {
+    pub asset: Address,
+    pub jurisdiction: String,
 }
 
 #[contract]
@@ -447,6 +461,10 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
     Ok(())
 }
 
+fn page_len(limit: u32) -> u64 {
+    limit.min(MAX_PAGE_SIZE) as u64
+}
+
 fn require_pending(p: &Payment) -> Result<(), Error> {
     if p.status != PaymentStatus::Pending {
         return Err(Error::PaymentNotPending);
@@ -461,6 +479,36 @@ fn require_open(p: &Payment) -> Result<(), Error> {
         PaymentStatus::Pending | PaymentStatus::Queried => Ok(()),
         _ => Err(Error::PaymentNotPending),
     }
+}
+
+/// Threshold index helpers: the list of rules whose amount is above zero.
+fn threshold_index(env: &Env) -> Vec<ThresholdKey> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ThresholdList)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Adds the rule to the index when `active`, removes it otherwise.
+fn update_threshold_index(env: &Env, asset: &Address, jurisdiction: &String, active: bool) {
+    let mut index = threshold_index(env);
+    let pos = index
+        .iter()
+        .position(|k| k.asset == *asset && k.jurisdiction == *jurisdiction);
+    match (active, pos) {
+        (true, None) => index.push_back(ThresholdKey {
+            asset: asset.clone(),
+            jurisdiction: jurisdiction.clone(),
+        }),
+        (false, Some(i)) => {
+            index.remove(i as u32);
+        }
+        _ => return,
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::ThresholdList, &index);
+    bump_instance(env);
 }
 
 /// Threshold lookup: exact jurisdiction first, then the `"*"` wildcard.
@@ -796,6 +844,19 @@ pub struct PaymentQueried {
     pub reason: String,
 }
 
+#[contractevent(topics = ["adm_prop"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    pub proposed: Address,
+}
+
+#[contractevent(topics = ["adm_acc"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    pub previous: Address,
+    pub new_admin: Address,
+}
+
 #[contractevent(topics = ["pay_rej"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentRejected {
@@ -846,6 +907,7 @@ impl ComplyRail {
         );
         s.set(&DataKey::NextPaymentId, &0u64);
         s.set(&DataKey::VaspCount, &0u32);
+        s.set(&DataKey::ThresholdList, &Vec::<ThresholdKey>::new(&env));
         bump_instance(&env);
     }
 
@@ -853,18 +915,61 @@ impl ComplyRail {
         admin(&env)
     }
 
-    /// Hand admin rights to a new address (both must sign).
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let old_admin = require_admin(&env)?;
-        new_admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+    /// Step 1 of a handover: the current admin proposes `new_admin`. Replaces
+    /// any earlier proposal and changes nothing until `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        require_admin(&env)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
         bump_instance(&env);
-        AdminChanged {
-            new_admin,
-            old_admin,
+        AdminProposed {
+            proposed: new_admin,
         }
         .publish(&env);
         Ok(())
+    }
+
+    /// Step 2: the proposed admin accepts. `caller` must be the proposed
+    /// address and must sign; any other address gets `Unauthorized`.
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        if caller != pending {
+            return Err(Error::Unauthorized);
+        }
+        let previous = admin(&env)?;
+        let s = env.storage().instance();
+        s.set(&DataKey::Admin, &pending);
+        s.remove(&DataKey::PendingAdmin);
+        bump_instance(&env);
+        AdminAccepted {
+            previous,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Current admin withdraws the pending proposal.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        require_admin(&env)?;
+        let s = env.storage().instance();
+        if !s.has(&DataKey::PendingAdmin) {
+            return Err(Error::NoPendingAdmin);
+        }
+        s.remove(&DataKey::PendingAdmin);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// The proposed admin awaiting `accept_admin`, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     // ----- VASP registry ---------------------------------------------------
@@ -1076,8 +1181,11 @@ impl ComplyRail {
         let jurisdiction =
             normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
+        // Keep the stored value even at 0: an explicit 0 overrides the `"*"`
+        // fallback (fail closed), so it must not be deleted.
         env.storage().persistent().set(&key, &amount);
         bump_persistent(&env, &key);
+        update_threshold_index(&env, &asset, &jurisdiction, amount > 0);
         record_threshold_change(&env, &asset, &jurisdiction, amount);
         ThresholdSet {
             asset,
@@ -1284,6 +1392,22 @@ impl ComplyRail {
             .persistent()
             .get::<_, bool>(&DataKey::AllowedAsset(asset))
             .unwrap_or(false)
+    }
+
+    /// Every configured rule with a non-zero amount, as
+    /// `(asset, jurisdiction, amount)`. A rule set to 0 is dropped from this
+    /// list but still answers `get_threshold` with 0.
+    pub fn list_thresholds(env: Env) -> Vec<(Address, String, i128)> {
+        let mut out = Vec::new(&env);
+        for k in threshold_index(&env).iter() {
+            let amount: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Threshold(k.asset.clone(), k.jurisdiction.clone()))
+                .unwrap_or(0);
+            out.push_back((k.asset, k.jurisdiction, amount));
+        }
+        out
     }
 
     // ----- Payments --------------------------------------------------------
@@ -1783,5 +1907,45 @@ impl ComplyRail {
             .instance()
             .get(&DataKey::NextPaymentId)
             .unwrap_or(0)
+    }
+
+    /// Payments with ids `start..start+limit`, ascending. `limit` is capped at
+    /// `MAX_PAGE_SIZE`; a page past the end (or `limit` 0) is empty.
+    pub fn list_payments(env: Env, start: u64, limit: u32) -> Vec<Payment> {
+        let mut out = Vec::new(&env);
+        let end = start
+            .saturating_add(page_len(limit))
+            .min(Self::payment_count(env.clone()));
+        let mut id = start;
+        while id < end {
+            if let Ok(p) = load_payment(&env, id) {
+                out.push_back(p);
+            }
+            id += 1;
+        }
+        out
+    }
+
+    /// Payments involving `vasp` (as originator or beneficiary side), in
+    /// submission order, starting at position `start` of that VASP's index.
+    /// `limit` is capped at `MAX_PAGE_SIZE`.
+    pub fn list_payments_by_vasp(env: Env, vasp: Address, start: u64, limit: u32) -> Vec<Payment> {
+        let mut out = Vec::new(&env);
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaspPayments(vasp))
+            .unwrap_or_else(|| Vec::new(&env));
+        let end = start.saturating_add(page_len(limit)).min(ids.len() as u64);
+        let mut n = start;
+        while n < end {
+            if let Some(id) = ids.get(n as u32) {
+                if let Ok(p) = load_payment(&env, id) {
+                    out.push_back(p);
+                }
+            }
+            n += 1;
+        }
+        out
     }
 }

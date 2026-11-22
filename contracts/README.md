@@ -28,15 +28,19 @@ originator VASP                     contract                      beneficiary VA
 | Function | Auth | Notes |
 |---|---|---|
 | `__constructor(admin, threshold_admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; `threshold_admin` should be a different key from `admin`; TTL defaults to 7 days |
-| `transfer_admin(new_admin)` | admin + new admin | |
+| `propose_admin(new_admin)` | admin | replaces any earlier proposal; the new admin takes over only after `accept_admin` |
+| `accept_admin(caller)` | proposed admin | `Unauthorized` for any other address; `NoPendingAdmin` if nothing is proposed |
+| `cancel_admin_proposal()` | admin | `NoPendingAdmin` if nothing is proposed |
+| `pending_admin` | – | read |
 | `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | jurisdiction must not be empty or `"*"` (`InvalidJurisdiction`) |
 | `set_vasp_status(address, status, reason)` | admin | `Active` / `Suspended` / `Revoked`. Suspend and revoke need a non-empty `reason` (max 256 bytes). `Revoked` is final. |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
 | `update_vasp(address, name, jurisdiction)` | admin | same jurisdiction rule as `register_vasp`; emits `vasp_upd` with old and new values; changes apply to payments submitted afterwards, pending payments keep the jurisdiction they were submitted under |
 | `rotate_vasp_key(address, new_key)` | admin | replaces the encryption key only; emits `vasp_upd` with sha256 of old and new keys; payments are unaffected |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
-| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | threshold admin / – | `amount` must be `0 ..= 9223372036854775807` (`i64::MAX`, the classic Stellar asset maximum); larger values fail with `InvalidThreshold`. The threshold admin is a separate role from the admin, so one key cannot both admit a VASP and lower a threshold |
+| `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | threshold admin / – | `amount` must be `0 ..= 9223372036854775807` (`i64::MAX`, the classic Stellar asset maximum); larger values fail with `InvalidThreshold`. The threshold admin is a separate role from the admin, so one key cannot both admit a VASP and lower a threshold. Setting `0` drops the rule from `list_thresholds` but still answers `get_threshold` with 0 (no `"*"` fallback) |
 | `remove_threshold(asset, jurisdiction)` | threshold admin | Fails with `ThresholdNotFound` if no threshold is set for that jurisdiction |
+| `list_thresholds` | – | `(asset, jurisdiction, amount)` for every rule above 0 |
 | `threshold_history(asset, jurisdiction, start, limit)` | – | Durable changelog per rule, oldest first. Keeps the last 100 changes; `seq` shows trimmed gaps. `limit` is capped at 100. |
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment; only before `expires_at` |
@@ -44,6 +48,8 @@ originator VASP                     contract                      beneficiary VA
 | `reject_payment(id, caller, reason, evidence_hash?)` | to_vasp or admin | refunds originator; `evidence_hash` is the sha256 of the off-chain evidence document (UTF-8 JSON), emitted in `pay_rej` |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
+| `list_payments(start, limit)` | – | ids `start..start+limit`, ascending; `limit` capped at 100 |
+| `list_payments_by_vasp(vasp, start, limit)` | – | that VASP's payments (as originator or beneficiary), in submission order; same cap (100) |
 
 ### Release and reclaim windows
 
