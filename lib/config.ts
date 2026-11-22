@@ -79,5 +79,4 @@ export function assetSymbol(contractId: string): string {
   return ASSETS.find(a => a.contractId === contractId)?.symbol ?? contractId.slice(0, 6)
 }
 
-/** ISO-style jurisdiction codes offered in the UI. `*` is the contract's fallback rule. */
-export const JURISDICTIONS = ['US', 'GB', 'EU', 'SG', 'HK', 'JP', 'AU', 'CA', 'NG', '*']
+export { JURISDICTIONS } from './jurisdictions'

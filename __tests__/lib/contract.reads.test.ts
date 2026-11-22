@@ -15,9 +15,13 @@ vi.mock('@/lib/config', async orig => ({ ...(await orig<object>()), isContractCo
 vi.mock('@stellar/stellar-sdk', async orig => {
   const actual = await orig<typeof import('@stellar/stellar-sdk')>()
   const fakeClient = {
-    async list_vasps() {
+    async list_vasps({ start, limit }: { start: number; limit: number }) {
       state.calls.push('list_vasps')
-      return { result: state.vaspAddresses }
+      return { result: state.vaspAddresses.slice(start, start + limit) }
+    },
+    async vasp_count() {
+      state.calls.push('vasp_count')
+      return { result: state.vaspAddresses.length }
     },
     async get_vasp({ address }: { address: string }) {
       return track('get_vasp', () => ({
@@ -83,6 +87,17 @@ describe('RPC read batching', () => {
     expect(state.calls.filter(c => c === 'get_vasp')).toHaveLength(12)
     expect(state.maxInFlight).toBeLessThanOrEqual(RPC_CONCURRENCY)
     expect(state.maxInFlight).toBeGreaterThan(1)
+  })
+
+  it('listVasps pages through the registry in chunks of 100', async () => {
+    state.vaspAddresses = Array.from({ length: 250 }, (_, i) => `G${i}`)
+    const vasps = await listVasps()
+
+    expect(vasps).toHaveLength(250)
+    expect(state.calls.filter(c => c === 'vasp_count')).toHaveLength(1)
+    expect(state.calls.filter(c => c === 'list_vasps')).toHaveLength(3)
+    expect(state.calls.filter(c => c === 'get_vasp')).toHaveLength(250)
+    expect(state.maxInFlight).toBeLessThanOrEqual(RPC_CONCURRENCY)
   })
 
   it('listPayments fetches exactly one page of the requested size', async () => {

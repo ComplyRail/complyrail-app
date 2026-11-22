@@ -21,7 +21,7 @@
 //! sets Travel Rule thresholds, so one compromised key cannot do both.
 //!
 //! Every state change emits an event whose topic matches the dashboard's
-//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `thr_rm`, `pay_sub`,
+//! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `admin_chg`, `pay_sub`,
 //! `att_sub`, `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
@@ -29,6 +29,7 @@ use soroban_sdk::{
     Env, String, Vec,
 };
 
+mod jurisdictions;
 mod test;
 
 /// Default time (seconds) a held payment may wait for release before the
@@ -44,6 +45,9 @@ pub const MAX_THRESHOLD: i128 = i64::MAX as i128;
 /// Most recent threshold changes kept per `(asset, jurisdiction)` rule.
 /// Older entries are dropped; `ThresholdChange::seq` shows any gap.
 pub const MAX_THRESHOLD_HISTORY: u32 = 100;
+
+/// Upper bound on entries returned by one `list_vasps` call.
+pub const MAX_VASP_PAGE: u32 = 100;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
@@ -80,6 +84,8 @@ pub enum Error {
     InvalidInput = 18,
     /// `remove_threshold` was called for a jurisdiction with no threshold.
     ThresholdNotFound = 19,
+    /// Jurisdiction code is not on the allowlist.
+    UnknownJurisdiction = 20,
 }
 
 /// Upper bound on the reason attached to a status change, in bytes.
@@ -155,7 +161,10 @@ enum DataKey {
     ThresholdAdmin,
     PaymentTtl,
     NextPaymentId,
-    VaspList,
+    /// Number of registered VASPs; also the next free index.
+    VaspCount,
+    /// Registered VASP address at position `index` (one persistent entry each).
+    VaspAt(u32),
     Vasp(Address),
     Threshold(Address, String),
     ThresholdHistory(Address, String),
@@ -320,6 +329,32 @@ fn record_threshold_change(env: &Env, asset: &Address, jurisdiction: &String, am
     bump_persistent(env, &key);
 }
 
+/// Uppercases a jurisdiction code and checks it against the allowlist.
+/// Returns `None` for empty, over-long or unknown codes.
+fn normalise_jurisdiction(env: &Env, raw: &String) -> Option<String> {
+    let len = raw.len();
+    if len == 0 || len > jurisdictions::MAX_LEN {
+        return None;
+    }
+    let n = len as usize;
+    let mut buf = [0u8; 3];
+    raw.copy_into_slice(&mut buf[..n]);
+    buf[..n].make_ascii_uppercase();
+    let code = core::str::from_utf8(&buf[..n]).ok()?;
+    if jurisdictions::ALLOWED.contains(&code) {
+        Some(String::from_str(env, code))
+    } else {
+        None
+    }
+}
+
+fn vasp_count_value(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::VaspCount)
+        .unwrap_or(0)
+}
+
 fn settle(env: &Env, p: &mut Payment, to: &Address, status: PaymentStatus) {
     token::Client::new(env, &p.asset).transfer(&env.current_contract_address(), to, &p.amount);
     p.status = status;
@@ -357,14 +392,17 @@ pub struct ThresholdSet {
     pub asset: Address,
     pub jurisdiction: String,
     pub amount: i128,
+    /// `true` when the exact rule was removed (`amount` is then 0).
+    pub removed: bool,
 }
 
-#[contractevent(topics = ["thr_rm"])]
+#[contractevent(topics = ["admin_chg"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ThresholdRemoved {
+pub struct AdminChanged {
+    /// The incoming admin, so the audit log can filter by it.
     #[topic]
-    pub asset: Address,
-    pub jurisdiction: String,
+    pub new_admin: Address,
+    pub old_admin: Address,
 }
 
 #[contractevent(topics = ["pay_sub"])]
@@ -427,7 +465,7 @@ impl ComplyRail {
             &payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL),
         );
         s.set(&DataKey::NextPaymentId, &0u64);
-        s.set(&DataKey::VaspList, &Vec::<Address>::new(&env));
+        s.set(&DataKey::VaspCount, &0u32);
         bump_instance(&env);
     }
 
@@ -437,10 +475,15 @@ impl ComplyRail {
 
     /// Hand admin rights to a new address (both must sign).
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        require_admin(&env)?;
+        let old_admin = require_admin(&env)?;
         new_admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         bump_instance(&env);
+        AdminChanged {
+            new_admin,
+            old_admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -455,6 +498,8 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        let jurisdiction =
+            normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         require_future_expiry(&env, expires_at)?;
         if env
             .storage()
@@ -474,13 +519,11 @@ impl ComplyRail {
         };
         save_vasp(&env, &entry);
 
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::VaspList)
-            .unwrap_or_else(|| Vec::new(&env));
-        list.push_back(address.clone());
-        env.storage().instance().set(&DataKey::VaspList, &list);
+        let index = vasp_count_value(&env);
+        let at = DataKey::VaspAt(index);
+        env.storage().persistent().set(&at, &address);
+        bump_persistent(&env, &at);
+        env.storage().instance().set(&DataKey::VaspCount, &(index + 1));
         bump_instance(&env);
 
         VaspRegistered {
@@ -561,11 +604,27 @@ impl ComplyRail {
         }
     }
 
-    pub fn list_vasps(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::VaspList)
-            .unwrap_or_else(|| Vec::new(&env))
+    /// Number of VASPs ever registered (the valid `list_vasps` index range).
+    pub fn vasp_count(env: Env) -> u32 {
+        vasp_count_value(&env)
+    }
+
+    /// Up to `limit` (capped at `MAX_VASP_PAGE`) registered VASP addresses,
+    /// starting at index `start`. Returns an empty list past the end.
+    pub fn list_vasps(env: Env, start: u32, limit: u32) -> Vec<Address> {
+        let count = vasp_count_value(&env);
+        let mut out = Vec::new(&env);
+        let end = start
+            .saturating_add(limit.min(MAX_VASP_PAGE))
+            .min(count);
+        for index in start..end {
+            let key = DataKey::VaspAt(index);
+            if let Some(addr) = env.storage().persistent().get::<_, Address>(&key) {
+                bump_persistent(&env, &key);
+                out.push_back(addr);
+            }
+        }
+        out
     }
 
     // ----- Thresholds ------------------------------------------------------
@@ -583,6 +642,8 @@ impl ComplyRail {
         if !(0..=MAX_THRESHOLD).contains(&amount) {
             return Err(Error::InvalidThreshold);
         }
+        let jurisdiction =
+            normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
         env.storage().persistent().set(&key, &amount);
         bump_persistent(&env, &key);
@@ -591,30 +652,40 @@ impl ComplyRail {
             asset,
             jurisdiction,
             amount,
+            removed: false,
         }
         .publish(&env);
         Ok(())
     }
 
-    /// Removes a per-jurisdiction threshold. Afterwards that jurisdiction falls
-    /// back to `"*"`, or to 0 (every payment held) if there is no fallback.
+    /// Deletes the exact `(asset, jurisdiction)` rule so the `"*"` fallback
+    /// applies to that jurisdiction again. Fails with `ThresholdNotFound` if no
+    /// rule is set for that exact jurisdiction.
     pub fn remove_threshold(env: Env, asset: Address, jurisdiction: String) -> Result<(), Error> {
         require_threshold_admin(&env)?;
+        let jurisdiction =
+            normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::ThresholdNotFound);
         }
         env.storage().persistent().remove(&key);
-        ThresholdRemoved {
+        ThresholdSet {
             asset,
             jurisdiction,
+            amount: 0,
+            removed: true,
         }
         .publish(&env);
         Ok(())
     }
 
+    /// Unknown or malformed codes read the `"*"` fallback, the same rule a
+    /// payment from an unrecognised jurisdiction would hit.
     pub fn get_threshold(env: Env, asset: Address, jurisdiction: String) -> i128 {
-        threshold_for(&env, &asset, &jurisdiction)
+        let j = normalise_jurisdiction(&env, &jurisdiction)
+            .unwrap_or_else(|| String::from_str(&env, "*"));
+        threshold_for(&env, &asset, &j)
     }
 
     /// Changelog for one `(asset, jurisdiction)` rule, oldest first. Returns up
