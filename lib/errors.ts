@@ -1,5 +1,6 @@
 /** Contract error codes from contracts/complyrail/src/lib.rs, as user-facing text. */
 export const CONTRACT_ERRORS: Record<number, string> = {
+  1: 'The contract has already been set up',
   2: 'Contract not initialised',
   3: 'This VASP is already registered',
   4: 'VASP not found',
