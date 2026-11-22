@@ -103,6 +103,10 @@ pub enum Error {
     ExposureCapExceeded = 24,
     /// Payment amount is below the configured minimum for the asset.
     BelowMinAmount = 25,
+    /// Beneficiary acknowledgement was recorded for this payment.
+    AlreadyAcknowledged = 26,
+    /// The payment has no attestation amendment to acknowledge.
+    AttestationNotAcknowledged = 27,
 }
 
 /// Upper bound on the reason attached to a status change, in bytes.
@@ -121,6 +125,9 @@ pub enum VaspStatus {
 pub enum PaymentStatus {
     /// Held in escrow, waiting for attestation and/or release.
     Pending,
+    /// Beneficiary has asked the originator for more information. The
+    /// originator can amend the attestation to return it to `Pending`.
+    Queried,
     Released,
     Rejected,
     /// Expired and refunded to the originator.
@@ -166,6 +173,8 @@ pub struct Payment {
     pub attestation_hash: Option<BytesN<32>>,
     pub ivms_version: Option<String>,
     pub attested_at: Option<u64>,
+    /// Set when `to_vasp` confirms it has checked the IVMS101 payload.
+    pub acknowledged_at: Option<u64>,
     pub created_at: u64,
     /// Ledger sequence at submission, for ordering events against the ledger.
     pub created_ledger: u32,
@@ -336,6 +345,15 @@ fn require_pending(p: &Payment) -> Result<(), Error> {
         return Err(Error::PaymentNotPending);
     }
     Ok(())
+}
+
+/// Unresolved payment: `Pending` or `Queried`. Used where a payment may be
+/// rejected or reclaimed even while the beneficiary has a query open.
+fn require_open(p: &Payment) -> Result<(), Error> {
+    match p.status {
+        PaymentStatus::Pending | PaymentStatus::Queried => Ok(()),
+        _ => Err(Error::PaymentNotPending),
+    }
 }
 
 /// Threshold lookup: exact jurisdiction first, then the `"*"` wildcard.
@@ -577,6 +595,36 @@ pub struct AttestationSubmitted {
     pub ivms_version: String,
 }
 
+#[contractevent(topics = ["att_ack"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationAcknowledged {
+    #[topic]
+    pub id: u64,
+    pub at: u64,
+}
+
+/// Emitted when the originator replaces an attestation before it is
+/// acknowledged. Carries both hashes so the superseded one stays auditable.
+#[contractevent(topics = ["att_amd"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationAmended {
+    #[topic]
+    pub id: u64,
+    pub old_hash: BytesN<32>,
+    pub new_hash: BytesN<32>,
+    pub ivms_version: String,
+}
+
+/// Emitted when the admin releases a payment the beneficiary VASP has not
+/// acknowledged. Keeps the override visible in the audit trail.
+#[contractevent(topics = ["pay_ovr"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcknowledgementOverridden {
+    #[topic]
+    pub id: u64,
+    pub admin: Address,
+}
+
 #[contractevent(topics = ["pay_rel"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentReleased {
@@ -584,6 +632,14 @@ pub struct PaymentReleased {
     pub id: u64,
     pub amount: i128,
     pub resolved_ledger: u32,
+}
+
+#[contractevent(topics = ["pay_qry"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentQueried {
+    #[topic]
+    pub id: u64,
+    pub reason: String,
 }
 
 #[contractevent(topics = ["pay_rej"])]
@@ -1045,6 +1101,7 @@ impl ComplyRail {
             attestation_hash: None,
             ivms_version: None,
             attested_at: None,
+            acknowledged_at: None,
             created_at: now,
             created_ledger: env.ledger().sequence(),
             expires_at: now + ttl,
@@ -1116,20 +1173,101 @@ impl ComplyRail {
         Ok(())
     }
 
-    /// Beneficiary VASP (after checking the IVMS101 payload matches the hash)
-    /// or the admin releases a held payment to the beneficiary.
+    /// Originating VASP replaces the attestation of a held payment, for
+    /// example to send a corrected IVMS101 payload. Allowed only until the
+    /// beneficiary acknowledges. The superseded hash is emitted in `att_amd`.
+    pub fn amend_attestation(
+        env: Env,
+        payment_id: u64,
+        attestation_hash: BytesN<32>,
+        ivms_version: String,
+    ) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.from_vasp.require_auth();
+        require_open(&p)?;
+        if p.acknowledged_at.is_some() {
+            return Err(Error::AlreadyAcknowledged);
+        }
+        let old_hash = p
+            .attestation_hash
+            .clone()
+            .ok_or(Error::AttestationRequired)?;
+        // Amending answers a query: the payment returns to Pending.
+        p.status = PaymentStatus::Pending;
+        let now = env.ledger().timestamp();
+        p.attestation_hash = Some(attestation_hash.clone());
+        p.ivms_version = Some(ivms_version.clone());
+        p.attested_at = Some(now);
+        save_payment(&env, &p);
+        AttestationAmended {
+            id: payment_id,
+            old_hash,
+            new_hash: attestation_hash,
+            ivms_version,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Beneficiary VASP confirms it has checked the IVMS101 payload against
+    /// the attested hash. Release by the beneficiary requires this step.
+    pub fn acknowledge_attestation(env: Env, payment_id: u64) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.to_vasp.require_auth();
+        require_pending(&p)?;
+        if p.attestation_hash.is_none() {
+            return Err(Error::AttestationRequired);
+        }
+        if p.acknowledged_at.is_some() {
+            return Err(Error::AlreadyAcknowledged);
+        }
+        let now = env.ledger().timestamp();
+        p.acknowledged_at = Some(now);
+        save_payment(&env, &p);
+        AttestationAcknowledged {
+            id: payment_id,
+            at: now,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Beneficiary VASP or admin releases a held payment to the beneficiary.
+    /// The beneficiary must have acknowledged the attestation first. The admin
+    /// may release without acknowledgement; that override emits `pay_ovr`.
     pub fn release_payment(env: Env, payment_id: u64, caller: Address) -> Result<(), Error> {
         caller.require_auth();
         let mut p = load_payment(&env, payment_id)?;
         require_pending(&p)?;
-        if caller != p.to_vasp && caller != admin(&env)? {
+        let admin_addr = admin(&env)?;
+        if caller != p.to_vasp && caller != admin_addr {
             return Err(Error::Unauthorized);
         }
+        // Re-check the beneficiary VASP at release time: it may have been
+        // suspended, revoked or expired after the payment was submitted.
+        // This applies to the admin override too; the admin cannot release
+        // funds to a VASP that is not currently active.
+        require_active_vasp(&env, &p.to_vasp)?;
         if p.requires_attestation && p.attestation_hash.is_none() {
             return Err(Error::AttestationRequired);
         }
+        let overridden = if caller == p.to_vasp {
+            if p.acknowledged_at.is_none() {
+                return Err(Error::AttestationNotAcknowledged);
+            }
+            false
+        } else {
+            p.acknowledged_at.is_none()
+        };
         let to = p.beneficiary.clone();
         settle(&env, &mut p, &to, PaymentStatus::Released);
+        if overridden {
+            AcknowledgementOverridden {
+                id: payment_id,
+                admin: admin_addr,
+            }
+            .publish(&env);
+        }
         PaymentReleased {
             id: payment_id,
             amount: p.amount,
@@ -1139,8 +1277,29 @@ impl ComplyRail {
         Ok(())
     }
 
+    /// Beneficiary VASP asks the originator for more information about a
+    /// held payment. Moves `Pending` to `Queried`. Not possible once the
+    /// attestation is acknowledged; reject instead.
+    pub fn query_payment(env: Env, payment_id: u64, reason: String) -> Result<(), Error> {
+        let mut p = load_payment(&env, payment_id)?;
+        p.to_vasp.require_auth();
+        require_pending(&p)?;
+        if p.acknowledged_at.is_some() {
+            return Err(Error::AlreadyAcknowledged);
+        }
+        p.status = PaymentStatus::Queried;
+        save_payment(&env, &p);
+        PaymentQueried {
+            id: payment_id,
+            reason,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     /// Beneficiary VASP or admin rejects a held payment; funds go back to the
-    /// originating VASP. `reason` is emitted for the audit trail.
+    /// originating VASP. Allowed while `Pending` or `Queried`. `reason` is
+    /// emitted for the audit trail.
     ///
     /// `evidence_hash` is optional. When given it must be the sha256 of the
     /// evidence document that justified the rejection, serialised as UTF-8
@@ -1157,7 +1316,7 @@ impl ComplyRail {
     ) -> Result<(), Error> {
         caller.require_auth();
         let mut p = load_payment(&env, payment_id)?;
-        require_pending(&p)?;
+        require_open(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {
             return Err(Error::Unauthorized);
         }
@@ -1174,11 +1333,12 @@ impl ComplyRail {
     }
 
     /// After `expires_at`, the originating VASP can pull back a payment that
-    /// was never released or rejected, so funds can't get stuck.
+    /// was never released or rejected, so funds can't get stuck. This also
+    /// applies while the payment is `Queried`.
     pub fn reclaim_expired(env: Env, payment_id: u64) -> Result<(), Error> {
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
-        require_pending(&p)?;
+        require_open(&p)?;
         if env.ledger().timestamp() < p.expires_at {
             return Err(Error::PaymentNotExpired);
         }
