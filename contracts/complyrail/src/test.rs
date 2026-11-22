@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, IntoVal, String,
 };
 
 struct Setup<'a> {
@@ -26,6 +26,10 @@ fn key(env: &Env, b: u8) -> BytesN<32> {
 }
 
 fn setup<'a>() -> Setup<'a> {
+    setup_with_ttl(None)
+}
+
+fn setup_with_ttl<'a>(payment_ttl: Option<u64>) -> Setup<'a> {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
@@ -41,7 +45,7 @@ fn setup<'a>() -> Setup<'a> {
     StellarAssetClient::new(&env, &token_addr).mint(&vasp_a, &1_000_000);
     let token = TokenClient::new(&env, &token_addr);
 
-    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+    let id = env.register(ComplyRail, (admin.clone(), payment_ttl));
     let client = ComplyRailClient::new(&env, &id);
     client.register_vasp(
         &vasp_a,
@@ -377,4 +381,329 @@ fn uncovered_jurisdiction_requires_attestation() {
     let p = t.client.get_payment(&id);
     assert!(p.requires_attestation);
     assert_eq!(p.status, PaymentStatus::Pending);
+}
+
+// ----- beneficiary VASP status changes while a payment is held (#62) ------
+
+/// Submits a 5_000 payment from vasp_a to vasp_b, which is above the US
+/// threshold of 3_000, so it is held in escrow.
+fn submit_held(t: &Setup) -> u64 {
+    t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    )
+}
+
+#[test]
+fn release_settles_after_beneficiary_vasp_suspended() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_vasp_status(&t.vasp_b, &VaspStatus::Suspended);
+    assert!(!t.client.is_vasp_active(&t.vasp_b));
+
+    // Current behaviour: release is not gated on the beneficiary VASP's status.
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn release_settles_after_beneficiary_vasp_expires() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    t.client.set_vasp_expiry(&t.vasp_b, &Some(2_000));
+    t.env.ledger().set_timestamp(2_000);
+    assert!(!t.client.is_vasp_active(&t.vasp_b));
+
+    // Current behaviour: release is not gated on the beneficiary VASP's expiry.
+    t.client.release_payment(&id, &t.vasp_b);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+// ----- races around payment expiry (#63) -----------------------------------
+
+#[test]
+fn release_then_reclaim_at_expiry_leaves_one_terminal_state() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+
+    t.client.release_payment(&id, &t.vasp_b);
+    // Reclaim at the same ledger time must not run after the release.
+    assert_eq!(
+        t.client.try_reclaim_expired(&id),
+        Err(Ok(Error::PaymentNotPending))
+    );
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Released);
+    assert_eq!(t.token.balance(&t.beneficiary), 5_000);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000 - 5_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn reclaim_then_release_at_expiry_leaves_one_terminal_state() {
+    let t = setup();
+    let id = submit_held(&t);
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+
+    t.client.reclaim_expired(&id);
+    // Release at the same ledger time must not run after the reclaim.
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn attest_at_expiry_is_recorded_but_payment_stays_pending() {
+    let t = setup();
+    let id = submit_held(&t);
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+
+    // Current behaviour: attestation is not gated on expiry.
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.status, PaymentStatus::Pending);
+    assert_eq!(p.attestation_hash, Some(key(&t.env, 7)));
+    assert_eq!(p.attested_at, Some(expires_at));
+    assert_eq!(t.token.balance(&t.client.address), 5_000);
+}
+
+#[test]
+fn attest_then_expire_reclaims_and_blocks_release() {
+    let t = setup();
+    let id = submit_held(&t);
+    t.client
+        .submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023"));
+
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+    t.client.reclaim_expired(&id);
+
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(
+        t.client.try_release_payment(&id, &t.vasp_b),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.beneficiary), 0);
+}
+
+#[test]
+fn attest_after_reclaim_is_rejected() {
+    let t = setup();
+    let id = submit_held(&t);
+    let expires_at = t.client.get_payment(&id).expires_at;
+    t.env.ledger().set_timestamp(expires_at);
+    t.client.reclaim_expired(&id);
+
+    assert_eq!(
+        t.client
+            .try_submit_attestation(&id, &key(&t.env, 7), &s(&t.env, "IVMS101.2023")),
+        Err(Ok(Error::PaymentNotPending))
+    );
+    assert_eq!(t.client.get_payment(&id).attestation_hash, None);
+}
+
+// ----- admin hand-over (#65) ------------------------------------------------
+
+/// Creates a contract with real auth checks and hands admin rights from
+/// `admin` to `new_admin`. Only the two transfer signatures are mocked.
+fn env_after_admin_transfer() -> (Env, Address, Address, Address) {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let id = env.register(ComplyRail, (admin.clone(), None::<u64>));
+
+    let args: soroban_sdk::Vec<soroban_sdk::Val> = (new_admin.clone(),).into_val(&env);
+    let by_admin = MockAuthInvoke {
+        contract: &id,
+        fn_name: "transfer_admin",
+        args: args.clone(),
+        sub_invokes: &[],
+    };
+    let by_new = MockAuthInvoke {
+        contract: &id,
+        fn_name: "transfer_admin",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[
+        MockAuth {
+            address: &admin,
+            invoke: &by_admin,
+        },
+        MockAuth {
+            address: &new_admin,
+            invoke: &by_new,
+        },
+    ]);
+    ComplyRailClient::new(&env, &id).transfer_admin(&new_admin);
+    (env, id, admin, new_admin)
+}
+
+#[test]
+fn previous_admin_loses_registry_and_threshold_rights() {
+    let (env, id, admin, new_admin) = env_after_admin_transfer();
+    let client = ComplyRailClient::new(&env, &id);
+    assert_eq!(client.admin(), new_admin);
+    assert_ne!(client.admin(), admin);
+
+    let vasp = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // The old admin signs, but the contract now requires the new admin.
+    let args = (
+        vasp.clone(),
+        s(&env, "Old Admin"),
+        s(&env, "US"),
+        key(&env, 1),
+        None::<u64>,
+    )
+        .into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "register_vasp",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &inv,
+    }]);
+    let r = client.try_register_vasp(
+        &vasp,
+        &s(&env, "Old Admin"),
+        &s(&env, "US"),
+        &key(&env, 1),
+        &None,
+    );
+    assert!(matches!(r, Err(Err(_))));
+    assert_eq!(client.list_vasps().len(), 0);
+
+    let args = (token.clone(), s(&env, "US"), 100i128).into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "set_threshold",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &inv,
+    }]);
+    let r = client.try_set_threshold(&token, &s(&env, "US"), &100);
+    assert!(matches!(r, Err(Err(_))));
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 0);
+}
+
+#[test]
+fn new_admin_can_register_and_set_threshold() {
+    let (env, id, _admin, new_admin) = env_after_admin_transfer();
+    let client = ComplyRailClient::new(&env, &id);
+
+    let vasp = Address::generate(&env);
+    let args = (
+        vasp.clone(),
+        s(&env, "New Admin VASP"),
+        s(&env, "US"),
+        key(&env, 1),
+        None::<u64>,
+    )
+        .into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "register_vasp",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &inv,
+    }]);
+    client.register_vasp(
+        &vasp,
+        &s(&env, "New Admin VASP"),
+        &s(&env, "US"),
+        &key(&env, 1),
+        &None,
+    );
+    assert!(client.is_vasp_active(&vasp));
+
+    let token = Address::generate(&env);
+    let args = (token.clone(), s(&env, "US"), 100i128).into_val(&env);
+    let inv = MockAuthInvoke {
+        contract: &id,
+        fn_name: "set_threshold",
+        args,
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &inv,
+    }]);
+    client.set_threshold(&token, &s(&env, "US"), &100);
+    assert_eq!(client.get_threshold(&token, &s(&env, "US")), 100);
+}
+
+// ----- extreme payment_ttl values (#64) ------------------------------------
+
+#[test]
+fn zero_ttl_makes_payment_reclaimable_immediately() {
+    let t = setup_with_ttl(Some(0));
+    let id = submit_held(&t);
+    let p = t.client.get_payment(&id);
+    assert_eq!(p.created_at, 1_000);
+    assert_eq!(p.expires_at, 1_000);
+
+    // Expiry is inclusive, so reclaim succeeds in the same ledger.
+    t.client.reclaim_expired(&id);
+    assert_eq!(t.client.get_payment(&id).status, PaymentStatus::Reclaimed);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn max_ttl_makes_submission_fail_without_side_effects() {
+    let t = setup_with_ttl(Some(u64::MAX));
+    // now (1_000) + u64::MAX overflows. The host aborts the call, which
+    // surfaces as an invocation failure rather than a contract error.
+    let r = t.client.try_submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    assert!(matches!(r, Err(Err(_))));
+
+    // The failed call is rolled back: no payment, no escrowed funds.
+    assert_eq!(t.client.payment_count(), 0);
+    assert_eq!(t.token.balance(&t.vasp_a), 1_000_000);
+    assert_eq!(t.token.balance(&t.client.address), 0);
 }
