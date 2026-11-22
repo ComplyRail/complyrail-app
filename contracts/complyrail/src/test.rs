@@ -1199,6 +1199,28 @@ fn reclaim_only_after_expiry() {
 }
 
 #[test]
+fn reclaim_emits_reclaimed_event_not_rejected() {
+    let t = setup();
+    let id = t.client.submit_payment(
+        &t.vasp_a,
+        &t.vasp_b,
+        &t.beneficiary,
+        &t.token.address,
+        &5_000,
+    );
+    t.env.ledger().set_timestamp(1_000 + DEFAULT_PAYMENT_TTL);
+    t.client.reclaim_expired(&id);
+
+    // Only this contract's events: the token contract emits its own transfer events.
+    let contract_id = t.client.address.clone();
+    let emitted = t.env.events().all().filter_by_contract(&contract_id);
+    let expected = PaymentReclaimed { id, amount: 5_000 }.to_xdr(&t.env, &contract_id);
+    // The reclaim emits exactly one event, and it is pay_recl. No pay_rej, so the
+    // audit log can't label a reclaimed payment as rejected.
+    assert_eq!(emitted.events(), &[expected][..]);
+}
+
+#[test]
 fn invalid_payments_rejected() {
     let t = setup();
     let a = &t.token.address;
@@ -1956,7 +1978,7 @@ fn reject_without_evidence_hash_emits_none() {
 }
 
 #[test]
-fn expiry_reclaim_emits_no_evidence_hash() {
+fn expiry_reclaim_emits_pay_recl() {
     let t = setup();
     let id = t.client.submit_payment(
         &t.vasp_a,
@@ -1969,13 +1991,9 @@ fn expiry_reclaim_emits_no_evidence_hash() {
     t.client.reclaim_expired(&id);
     assert_last_event(
         &t,
-        &PaymentRejected {
+        &PaymentReclaimed {
             id,
-            asset: t.token.address.clone(),
-            reason: s(&t.env, "expired"),
-            evidence_hash: None,
-            resolved_ledger: t.env.ledger().sequence(),
-                    by: t.vasp_a.clone(),
+            amount: 5_000,
         },
     );
 }
@@ -2992,7 +3010,7 @@ fn reject_event_carries_asset() {
 }
 
 #[test]
-fn reclaim_event_carries_asset() {
+fn reclaim_event_carries_amount() {
     let t = setup();
     let id = t.client.submit_payment(
         &t.vasp_a,
@@ -3007,13 +3025,9 @@ fn reclaim_event_carries_asset() {
     let mut expected = Vec::new(&t.env);
     expected.push_back(ev(
         &t,
-        &PaymentRejected {
+        &PaymentReclaimed {
             id,
-            asset: t.token.address.clone(),
-            reason: s(&t.env, "expired"),
-            evidence_hash: None,
-            resolved_ledger: t.env.ledger().sequence(),
-                    by: t.vasp_a.clone(),
+            amount: 5_000,
         },
     ));
     assert_eq!(events_of(&t), expected);
@@ -3739,7 +3753,7 @@ fn admin_override_release_is_distinguishable_from_beneficiary_release() {
 }
 
 #[test]
-fn reject_and_reclaim_events_record_actor() {
+fn reject_and_reclaim_events_are_distinct() {
     let t = setup();
     let a = &t.token.address;
     let rejected = t
@@ -3766,13 +3780,9 @@ fn reject_and_reclaim_events_record_actor() {
     t.client.reclaim_expired(&reclaimed);
     assert!(emitted_by(
         &t,
-        &PaymentRejected {
+        &PaymentReclaimed {
             id: reclaimed,
-            reason: s(&t.env, "expired"),
-            by: t.vasp_a.clone(),
-                    asset: t.token.address.clone(),
-            resolved_ledger: t.env.ledger().sequence(),
-            evidence_hash: None,
+            amount: 5_000,
         }
     ));
 }
@@ -4143,7 +4153,7 @@ fn reject_payment_emits_pay_rej_with_reason() {
 }
 
 #[test]
-fn reclaim_expired_emits_pay_rej_as_expired() {
+fn reclaim_expired_emits_pay_recl() {
     let t = setup();
     let id = t.client.submit_payment(
         &t.vasp_a,
@@ -4156,14 +4166,9 @@ fn reclaim_expired_emits_pay_rej_as_expired() {
     t.client.reclaim_expired(&id);
     assert_eq!(
         t.env.events().all().filter_by_contract(&t.client.address),
-        [PaymentRejected {
+        [PaymentReclaimed {
             id,
-            reason: s(&t.env, "expired"),
-        
-            asset: t.token.address.clone(),
-            resolved_ledger: t.env.ledger().sequence(),
-            by: t.vasp_a.clone(),
-            evidence_hash: None,
+            amount: 5_000,
         }
         .to_xdr(&t.env, &t.client.address)]
     );

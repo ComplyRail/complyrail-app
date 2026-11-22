@@ -74,7 +74,7 @@ Soroban archives a persistent entry once its TTL runs out, so an untouched held 
 
 The old fixed 30-day horizon was enough for the 7-day default, but any `payment_ttl` above 30 days let an untouched payment be archived before the originator could reclaim it. The contract instance (TTL config and VASP list) uses the same horizon so it never expires before the payments it governs. The horizon is still capped by the network's maximum entry TTL.
 
-Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`.
+Events use the same names as the dashboard's audit log: `vasp_reg`, `vasp_upd`, `thr_set`, `pay_sub`, `att_sub`, `pay_rel`, `pay_rej`, `pay_recl`.
 
 ## Error codes
 

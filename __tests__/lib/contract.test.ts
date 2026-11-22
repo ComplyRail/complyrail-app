@@ -170,6 +170,18 @@ describe('mapEvent', () => {
     expect(e!.details!.old_admin).toBe(G1)
   })
 
+  it('labels a reclaim as reclaimed, not rejected', () => {
+    const e = mapEvent({
+      ...base,
+      topics: ['pay_recl', 4n],
+      data: { id: 4n, amount: 30_000_000n },
+    })
+    expect(e!.type).toBe('pay_recl')
+    expect(e!.description).toBe('Payment reclaimed')
+    expect(e!.subject).toBe('4')
+    expect(e!.details!.amount).toBe('3')
+  })
+
   it('ignores events it does not know', () => {
     expect(mapEvent({ ...base, topics: ['transfer', G1], data: 1n })).toBeNull()
   })

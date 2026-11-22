@@ -42,6 +42,8 @@ The dashboard is published to GitHub Pages on every push to `main` (`.github/wor
 
 ## Development
 
+New here? [CONTRIBUTING.md](./CONTRIBUTING.md) walks through setup from a clean machine, getting testnet funds, and how to submit a PR.
+
 ```bash
 npm install --legacy-peer-deps
 npm run dev          # http://localhost:3000

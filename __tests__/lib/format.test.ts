@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   bytesToHex,
+  exceedsBalance,
   formatAddress,
   formatHash,
   fromUnits,
@@ -99,5 +100,20 @@ describe('toUnits i128 bound', () => {
 
   it('rejects amounts far above the i128 maximum', () => {
     expect(() => toUnits('1' + '0'.repeat(40))).toThrow(/too large/)
+  })
+})
+
+describe('exceedsBalance', () => {
+  it('flags an amount larger than the balance', () => {
+    expect(exceedsBalance(10_000_001n, 10_000_000n)).toBe(true)
+  })
+
+  it('allows an amount equal to or below the balance', () => {
+    expect(exceedsBalance(10_000_000n, 10_000_000n)).toBe(false)
+    expect(exceedsBalance(1n, 10_000_000n)).toBe(false)
+  })
+
+  it('does not block while the balance is still unknown', () => {
+    expect(exceedsBalance(10n ** 18n, null)).toBe(false)
   })
 })

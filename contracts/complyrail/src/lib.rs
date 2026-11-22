@@ -22,7 +22,7 @@
 //!
 //! Every state change emits an event whose topic matches the dashboard's
 //! audit log types (`vasp_reg`, `vasp_upd`, `thr_set`, `admin_chg`, `pay_sub`,
-//! `att_sub`, `pay_rel`, `pay_rej`, `pay_canc`).
+//! `att_sub`, `pay_rel`, `pay_rej`, `pay_canc`, `pay_recl`).
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Bytes, BytesN,
@@ -879,6 +879,14 @@ pub struct PaymentCancelled {
     #[topic]
     pub id: u64,
     pub asset: Address,
+    pub amount: i128,
+}
+
+#[contractevent(topics = ["pay_recl"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentReclaimed {
+    #[topic]
+    pub id: u64,
     pub amount: i128,
 }
 
@@ -1754,14 +1762,11 @@ impl ComplyRail {
             return Err(Error::PaymentNotExpired);
         }
         let to = p.from_vasp.clone();
+        let amount = p.amount;
         settle(&env, &mut p, &to, PaymentStatus::Reclaimed)?;
-        PaymentRejected {
+        PaymentReclaimed {
             id: payment_id,
-            asset: p.asset.clone(),
-            reason: String::from_str(&env, "expired"),
-            evidence_hash: None,
-            resolved_ledger: env.ledger().sequence(),
-                    by: p.from_vasp.clone(),
+            amount,
         }
         .publish(&env);
         Ok(())
@@ -1779,14 +1784,11 @@ impl ComplyRail {
             return Err(Error::ReceiverStillActive);
         }
         let to = p.from_vasp.clone();
+        let amount = p.amount;
         settle(&env, &mut p, &to, PaymentStatus::Reclaimed)?;
-        PaymentRejected {
+        PaymentReclaimed {
             id: payment_id,
-            asset: p.asset.clone(),
-            reason: String::from_str(&env, "receiver_inactive"),
-            evidence_hash: None,
-            resolved_ledger: env.ledger().sequence(),
-                    by: p.from_vasp.clone(),
+            amount,
         }
         .publish(&env);
         Ok(())

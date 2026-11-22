@@ -108,6 +108,7 @@ const EVENT_LABELS: Record<AuditEventType, string> = {
   att_sub: 'Attestation submitted',
   pay_rel: 'Payment released',
   pay_rej: 'Payment rejected',
+  pay_recl: 'Payment reclaimed',
 }
 
 function stringify(v: unknown): string {
@@ -134,7 +135,7 @@ export function mapEvent(e: {
   if (e.data && typeof e.data === 'object' && !(e.data instanceof Uint8Array)) {
     for (const [k, v] of Object.entries(e.data as Record<string, unknown>)) details[k] = stringify(v)
   }
-  if (details.amount && (type === 'pay_sub' || type === 'pay_rel' || type === 'thr_set')) {
+  if (details.amount && (type === 'pay_sub' || type === 'pay_rel' || type === 'pay_recl' || type === 'thr_set')) {
     details.amount = fromUnits(details.amount)
   }
   return {
@@ -471,6 +472,20 @@ export async function listAuditEvents(): Promise<AuditEventsResult> {
       fallbackReason,
     },
   }
+}
+
+/**
+ * Balance of `owner` for a Stellar Asset Contract, in integer units. Read-only:
+ * simulates the SAC `balance` method, so nothing is signed.
+ */
+export async function getAssetBalance(asset: string, owner: string): Promise<bigint> {
+  const sac = (await contract.Client.from({
+    contractId: asset,
+    rpcUrl: config.rpcUrl,
+    networkPassphrase: config.networkPassphrase,
+  })) as AnyClient
+  const tx = await sac.balance({ id: owner })
+  return BigInt(unwrap<bigint | number | string>(tx.result))
 }
 
 // ----- writes --------------------------------------------------------------
