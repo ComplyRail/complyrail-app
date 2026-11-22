@@ -43,7 +43,7 @@ describe('canonicalJson (RFC 8785)', () => {
       beneficiaryName: 'Bola', beneficiaryAccount: G2, amount: '10', asset: 'USDC',
     })
     expect(await sha256Hex(canonicalJson(payload))).toBe(
-      '4aa5a69691635bb1da3854c9d5915634dfd232d8a2966d372a5376e3e9ebccf3',
+      'be84610f178ff28ed14d8ae5842355631d1192157edc96447a91854028abea44',
     )
   })
 

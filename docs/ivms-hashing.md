@@ -35,19 +35,19 @@ Input (the object produced by `buildIvmsPayload` with paymentId `1`,
 originator "Ada", beneficiary "Bola", amount `10`, asset `USDC`):
 
 ```json
-{"ivms101Version":"2023","paymentId":"1","originator":{"originatorPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Ada"}]}}}],"accountNumber":["GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7"]},"beneficiary":{"beneficiaryPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Bola"}]}}}],"accountNumber":["GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"]},"transfer":{"amount":"10","asset":"USDC"}}
+{"ivms101Version":"IVMS101.2023","paymentId":"1","originator":{"originatorPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Ada"}]}}}],"accountNumber":["GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7"]},"beneficiary":{"beneficiaryPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Bola"}]}}}],"accountNumber":["GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"]},"transfer":{"amount":"10","asset":"USDC"}}
 ```
 
 Canonical form (the bytes that are hashed):
 
 ```
-{"beneficiary":{"accountNumber":["GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"],"beneficiaryPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Bola"}]}}}]},"ivms101Version":"2023","originator":{"accountNumber":["GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7"],"originatorPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Ada"}]}}}]},"paymentId":"1","transfer":{"amount":"10","asset":"USDC"}}
+{"beneficiary":{"accountNumber":["GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"],"beneficiaryPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Bola"}]}}}]},"ivms101Version":"IVMS101.2023","originator":{"accountNumber":["GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7"],"originatorPersons":[{"naturalPerson":{"name":{"nameIdentifier":[{"primaryIdentifier":"Ada"}]}}}]},"paymentId":"1","transfer":{"amount":"10","asset":"USDC"}}
 ```
 
 SHA-256:
 
 ```
-4aa5a69691635bb1da3854c9d5915634dfd232d8a2966d372a5376e3e9ebccf3
+be84610f178ff28ed14d8ae5842355631d1192157edc96447a91854028abea44
 ```
 
 ### Vector 2: RFC 8785 appendix sample
