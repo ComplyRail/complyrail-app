@@ -661,6 +661,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  const bytes = new Uint8Array(new TextEncoder().encode(text))
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
   return bytesToHex(new Uint8Array(digest))
 }

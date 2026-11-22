@@ -9,9 +9,11 @@ import { useWallet } from '@/components/WalletProvider'
 import { formatAddress, vaspKeyError } from '@/lib/format'
 import { JURISDICTIONS, isRegistrableJurisdiction } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
-import { registerVasp, setVaspStatus } from '@/lib/contract'
+import { registerVasp, setVaspExpiry, setVaspStatus } from '@/lib/contract'
+import { expiryFromDays, expiryState } from '@/lib/vasp-expiry'
 import { FIELD_LIMITS, lengthError } from '@/lib/limits'
-import { VaspStatus } from '@/lib/types'
+import { VaspStatus, type VaspEntry } from '@/lib/types'
+import { ResponsiveTable, type Column } from '@/components/ResponsiveTable'
 
 const emptyForm = { address: '', name: '', jurisdiction: '', publicKeyHex: '', expiresDays: '' }
 
@@ -24,6 +26,7 @@ export default function VaspsPage() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(emptyForm)
   const [statusReason, setStatusReason] = useState('')
+  const [renewing, setRenewing] = useState<{ address: string; days: string } | null>(null)
   const isAdmin = role === 'admin'
 
   const formError =
@@ -62,6 +65,76 @@ export default function VaspsPage() {
       reload()
     }
   }
+
+  const renewExpiry = async (vaspAddress: string, expiresAt: number | undefined, label: string) => {
+    const ok = await tx.run(label, s => setVaspExpiry(s, vaspAddress, expiresAt).then(() => true))
+    if (ok) {
+      setRenewing(null)
+      reload()
+    }
+  }
+
+  const submitRenew = (vaspAddress: string) => {
+    if (!renewing) return
+    const expiresAt = expiryFromDays(renewing.days, Date.now() / 1000)
+    if (expiresAt === null) return
+    renewExpiry(vaspAddress, expiresAt, `Expiry set to ${renewing.days} days from now`)
+  }
+
+  const renewForm = (vaspAddress: string) => (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <label htmlFor={`renew-${vaspAddress}`}>Valid for</label>
+      <input id={`renew-${vaspAddress}`} type="number" min="1" inputMode="numeric"
+        placeholder="days from now" value={renewing?.days ?? ''}
+        onChange={e => setRenewing({ address: vaspAddress, days: e.target.value })}
+        className="w-40 px-3 py-1 border border-border rounded bg-background" />
+      <button disabled={tx.pending || expiryFromDays(renewing?.days ?? '', Date.now() / 1000) === null}
+        onClick={() => submitRenew(vaspAddress)}
+        className="px-3 py-1 bg-primary text-primary-foreground rounded text-xs hover:opacity-90 disabled:opacity-50">
+        Set expiry
+      </button>
+      <button disabled={tx.pending || !vasps.find(v => v.address === vaspAddress)?.expiresAt}
+        onClick={() => renewExpiry(vaspAddress, undefined, 'Expiry removed')}
+        className="px-3 py-1 bg-muted rounded text-xs hover:opacity-90 disabled:opacity-50">
+        Remove expiry
+      </button>
+    </div>
+  )
+
+  const vaspColumns: Column<VaspEntry>[] = [
+    { header: 'Name', className: 'font-medium', cell: v => v.name },
+    { header: 'Address', className: 'font-mono text-sm', cell: v => (
+      <ExplorerLink kind="account" id={v.address}>{formatAddress(v.address)}</ExplorerLink>
+    ) },
+    { header: 'Jurisdiction', cell: v => v.jurisdiction },
+    { header: 'Status', cell: v => <StatusBadge status={v.status} type="vasp" /> },
+    { header: 'Expires', className: 'text-sm', cell: v => {
+      const state = expiryState(v.expiresAt, Date.now() / 1000)
+      if (state.kind === 'none') return <span className="text-muted-foreground">No expiry</span>
+      if (state.kind === 'expired') return <span className="text-red-600 font-semibold">Expired</span>
+      if (state.kind === 'expiring-soon') return <span className="text-amber-700 font-semibold">Expires soon · {state.daysLeft}d remaining</span>
+      return <span className="text-muted-foreground">{state.daysLeft}d remaining</span>
+    } },
+    ...(isAdmin ? [{ header: 'Actions', className: 'text-sm', cell: (v: VaspEntry) => (
+      <div className="flex flex-wrap gap-2">
+        {v.status !== VaspStatus.Active && (
+          <button disabled={tx.pending} onClick={() => changeStatus(v.address, VaspStatus.Active)}
+            className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Activate</button>
+        )}
+        {v.status === VaspStatus.Active && (
+          <button disabled={tx.pending} onClick={() => changeStatus(v.address, VaspStatus.Suspended)}
+            className="px-3 py-1 bg-yellow-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Suspend</button>
+        )}
+        {v.status !== VaspStatus.Revoked && (
+          <button disabled={tx.pending} onClick={() => changeStatus(v.address, VaspStatus.Revoked)}
+            className="px-3 py-1 bg-red-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Revoke</button>
+        )}
+        <button disabled={tx.pending}
+          onClick={() => setRenewing(renewing?.address === v.address ? null : { address: v.address, days: '' })}
+          className="px-3 py-1 bg-muted rounded text-xs hover:opacity-90 disabled:opacity-50">Renew</button>
+      </div>
+    ) }] : []),
+  ]
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -136,64 +209,16 @@ export default function VaspsPage() {
             No VASPs registered yet{isAdmin ? ' — use “Register VASP” above.' : '.'}
           </div>
         ) : (
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50">
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Name</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Address</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Jurisdiction</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Status</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold">Expires</th>
-                    {isAdmin && <th className="px-6 py-3 text-left text-sm font-semibold">Actions</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {vasps.map(vasp => {
-                    const now = clock.now
-                    const isExpired = !!vasp.expiresAt && now >= vasp.expiresAt
-                    const daysLeft = vasp.expiresAt ? Math.ceil((vasp.expiresAt - now) / 86400) : null
-                    return (
-                      <tr key={vasp.address} className={`border-b border-border hover:bg-muted/50 ${isExpired ? 'bg-red-50' : ''}`}>
-                        <td className="px-6 py-4 font-medium">{vasp.name}</td>
-                        <td className="px-6 py-4 font-mono text-sm">
-                          <ExplorerLink kind="account" id={vasp.address}>{formatAddress(vasp.address)}</ExplorerLink>
-                        </td>
-                        <td className="px-6 py-4">{vasp.jurisdiction}</td>
-                        <td className="px-6 py-4"><StatusBadge status={vasp.status} type="vasp" /></td>
-                        <td className="px-6 py-4 text-sm">
-                          {vasp.expiresAt ? (
-                            <span className={isExpired ? 'text-red-600 font-semibold' : 'text-muted-foreground'}>
-                              {isExpired ? 'Expired' : `${daysLeft}d remaining`}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">No expiry</span>
-                          )}
-                        </td>
-                        {isAdmin && (
-                          <td className="px-6 py-4 text-sm space-x-2 whitespace-nowrap">
-                            {vasp.status !== VaspStatus.Active && (
-                              <button disabled={tx.pending} onClick={() => changeStatus(vasp.address, VaspStatus.Active)}
-                                className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Activate</button>
-                            )}
-                            {vasp.status === VaspStatus.Active && (
-                              <button disabled={tx.pending} onClick={() => changeStatus(vasp.address, VaspStatus.Suspended)}
-                                className="px-3 py-1 bg-yellow-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Suspend</button>
-                            )}
-                            {vasp.status !== VaspStatus.Revoked && (
-                              <button disabled={tx.pending} onClick={() => changeStatus(vasp.address, VaspStatus.Revoked)}
-                                className="px-3 py-1 bg-red-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Revoke</button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <ResponsiveTable
+            rows={vasps}
+            rowKey={vasp => vasp.address}
+            rowClassName={vasp => {
+              const state = expiryState(vasp.expiresAt, Date.now() / 1000).kind
+              return state === 'expired' ? 'bg-red-50' : state === 'expiring-soon' ? 'bg-amber-50' : ''
+            }}
+            columns={vaspColumns}
+            expandedRow={vasp => (isAdmin && renewing?.address === vasp.address ? renewForm(vasp.address) : null)}
+          />
         )}
       </div>
     </div>

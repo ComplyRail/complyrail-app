@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useAuditEvents } from '@/lib/hooks'
 import { formatAddress } from '@/lib/format'
 import { ExplorerLink } from '@/components/Notice'
+import { ResponsiveTable } from '@/components/ResponsiveTable'
 
 const EVENT_TYPES = [
   { value: 'vasp_reg', label: 'VASP Registration' },
@@ -145,49 +146,31 @@ export default function AuditLogPage() {
           </div>
         </div>
 
-        <div className="bg-card border border-border rounded-lg overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border bg-muted/50">
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Timestamp</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Type</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Subject</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Description</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Tx</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEvents.map((event) => (
-                  <tr key={event.id} className="border-b border-border hover:bg-muted/50">
-                    <td className="px-6 py-4 text-sm">
-                      {new Date(event.timestamp * 1000).toLocaleString()}
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <span className="inline-block px-2 py-1 rounded bg-muted text-xs font-mono">
-                        {event.type}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-sm font-mono">
-                      {/^\d+$/.test(event.subject) ? `#${event.subject}` : formatAddress(event.subject)}
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      {event.description}
-                      {event.details && Object.keys(event.details).length > 0 && (
-                        <div className="text-xs text-muted-foreground">
-                          {Object.entries(event.details).map(([k, v]) => `${k}: ${v.length > 20 ? formatAddress(v) : v}`).join(' · ')}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-sm font-mono">
-                      <ExplorerLink kind="tx" id={event.txHash}>{event.txHash.slice(0, 8)}</ExplorerLink>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <ResponsiveTable
+          rows={filteredEvents}
+          rowKey={event => event.id}
+          columns={[
+            { header: 'Timestamp', className: 'text-sm', cell: event => new Date(event.timestamp * 1000).toLocaleString() },
+            { header: 'Type', className: 'text-sm', cell: event => (
+              <span className="inline-block px-2 py-1 rounded bg-muted text-xs font-mono">{event.type}</span>
+            ) },
+            { header: 'Subject', className: 'text-sm font-mono', cell: event =>
+              /^\d+$/.test(event.subject) ? `#${event.subject}` : formatAddress(event.subject) },
+            { header: 'Description', className: 'text-sm', cell: event => (
+              <>
+                {event.description}
+                {event.details && Object.keys(event.details).length > 0 && (
+                  <div className="text-xs text-muted-foreground">
+                    {Object.entries(event.details).map(([k, v]) => `${k}: ${v.length > 20 ? formatAddress(v) : v}`).join(' · ')}
+                  </div>
+                )}
+              </>
+            ) },
+            { header: 'Tx', className: 'text-sm font-mono', cell: event => (
+              <ExplorerLink kind="tx" id={event.txHash}>{event.txHash.slice(0, 8)}</ExplorerLink>
+            ) },
+          ]}
+        />
 
         {filteredEvents.length === 0 && (
           <div className="text-center text-muted-foreground py-12">

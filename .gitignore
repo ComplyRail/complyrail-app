@@ -42,3 +42,8 @@ contracts/**/test_snapshots/
 
 # TypeScript build cache
 *.tsbuildinfo
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
