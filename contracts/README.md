@@ -27,7 +27,7 @@ originator VASP                     contract                      beneficiary VA
 
 | Function | Auth | Notes |
 |---|---|---|
-| `__constructor(admin, threshold_admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; `threshold_admin` should be a different key from `admin`; TTL defaults to 7 days |
+| `__constructor(admin, threshold_admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; `threshold_admin` should be a different key from `admin`; TTL defaults to 7 days, max 100 years (larger values are rejected, so `now + ttl` cannot overflow) |
 | `propose_admin(new_admin)` | admin | replaces any earlier proposal; the new admin takes over only after `accept_admin` |
 | `accept_admin(caller)` | proposed admin | `Unauthorized` for any other address; `NoPendingAdmin` if nothing is proposed |
 | `cancel_admin_proposal()` | admin | `NoPendingAdmin` if nothing is proposed |
@@ -45,7 +45,7 @@ originator VASP                     contract                      beneficiary VA
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment; only before `expires_at` |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold; only before `expires_at` |
-| `reject_payment(id, caller, reason, evidence_hash?)` | to_vasp or admin | refunds originator; `evidence_hash` is the sha256 of the off-chain evidence document (UTF-8 JSON), emitted in `pay_rej` |
+| `reject_payment(id, caller, reason, evidence_hash?)` | to_vasp or admin | refunds originator; `reason` must not be empty or whitespace-only (`InvalidInput`), max 256 bytes; `evidence_hash` is the sha256 of the off-chain evidence document (UTF-8 JSON), emitted in `pay_rej` |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
 | `list_payments(start, limit)` | – | ids `start..start+limit`, ascending; `limit` capped at 100 |

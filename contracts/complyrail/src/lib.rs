@@ -25,8 +25,8 @@
 //! `att_sub`, `pay_rel`, `pay_rej`, `pay_canc`, `pay_recl`).
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Bytes, BytesN,
-    Env, String, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token, Address,
+    Bytes, BytesN, Env, String, Vec,
 };
 
 mod jurisdictions;
@@ -35,6 +35,17 @@ mod test;
 /// Default time (seconds) a held payment may wait for release before the
 /// originator can reclaim it: 7 days.
 pub const DEFAULT_PAYMENT_TTL: u64 = 7 * 24 * 60 * 60;
+
+/// Upper bound for the TTL the constructor accepts: 100 years. Keeps `now + ttl`
+/// far away from `u64::MAX`. `set_payment_ttl` uses the tighter `MAX_PAYMENT_TTL`.
+pub const MAX_CONSTRUCTOR_TTL: u64 = 100 * 365 * 24 * 60 * 60;
+
+/// Maximum byte lengths of free-text fields. They are stored on-chain and
+/// emitted in events, so unbounded values would raise ledger cost and break
+/// indexers. The dashboard mirrors these limits in `lib/limits.ts`.
+pub const MAX_NAME_LEN: u32 = 128;
+pub const MAX_JURISDICTION_LEN: u32 = 8;
+pub const MAX_IVMS_VERSION_LEN: u32 = 32;
 
 /// Default cap on held (pending) payments an originating VASP may have open at
 /// once. Admin can change it with `set_max_open_per_vasp`.
@@ -100,6 +111,8 @@ pub enum Error {
     Paused = 34,
     /// Requested TTL is outside [MIN_PAYMENT_TTL, MAX_PAYMENT_TTL].
     InvalidTtl = 35,
+    /// `now + ttl` does not fit in a u64.
+    ExpiryOverflow = 38,
     /// `accept_admin` or `cancel_admin_proposal` was called with no proposal pending.
     NoPendingAdmin = 37,
     SameVasp = 13,
@@ -216,6 +229,9 @@ pub struct Payment {
     pub resolved_at: Option<u64>,
     /// Ledger sequence at release, rejection or reclaim.
     pub resolved_ledger: Option<u32>,
+    /// Optional reference from the originator's own system (e.g. an anchor's
+    /// transfer id), so on-chain payments can be matched to off-chain records.
+    pub external_ref: Option<BytesN<32>>,
 }
 
 #[contracttype]
@@ -479,6 +495,28 @@ fn require_open(p: &Payment) -> Result<(), Error> {
         PaymentStatus::Pending | PaymentStatus::Queried => Ok(()),
         _ => Err(Error::PaymentNotPending),
     }
+}
+
+/// Rejects a reason that is empty or made only of ASCII whitespace
+/// (space, tab, CR, LF, form feed). Length is already bounded by
+/// `MAX_REASON_LEN`, so a stack buffer of that size is enough.
+fn check_reason_not_blank(reason: &String) -> Result<(), Error> {
+    let n = reason.len() as usize;
+    let mut buf = [0u8; MAX_REASON_LEN as usize];
+    reason.copy_into_slice(&mut buf[..n]);
+    // `all` is true for an empty slice, so empty reasons are rejected here too.
+    if buf[..n].iter().all(|b| b.is_ascii_whitespace()) {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
+}
+
+/// Rejects a free-text value longer than `max` bytes.
+fn check_max_len(value: &String, max: u32) -> Result<(), Error> {
+    if value.len() > max {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
 }
 
 /// Threshold index helpers: the list of rules whose amount is above zero.
@@ -778,6 +816,7 @@ pub struct PaymentSubmitted {
     pub from_vasp: Address,
     pub to_vasp: Address,
     pub beneficiary: Address,
+    pub external_ref: Option<BytesN<32>>,
     pub asset: Address,
     pub amount: i128,
     pub requires_attestation: bool,
@@ -906,13 +945,14 @@ impl ComplyRail {
         threshold_admin: Address,
         payment_ttl: Option<u64>,
     ) {
+        let ttl = payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL);
+        if ttl > MAX_CONSTRUCTOR_TTL {
+            panic_with_error!(&env, Error::InvalidTtl);
+        }
         let s = env.storage().instance();
         s.set(&DataKey::Admin, &admin);
         s.set(&DataKey::ThresholdAdmin, &threshold_admin);
-        s.set(
-            &DataKey::PaymentTtl,
-            &payment_ttl.unwrap_or(DEFAULT_PAYMENT_TTL),
-        );
+        s.set(&DataKey::PaymentTtl, &ttl);
         s.set(&DataKey::NextPaymentId, &0u64);
         s.set(&DataKey::VaspCount, &0u32);
         s.set(&DataKey::ThresholdList, &Vec::<ThresholdKey>::new(&env));
@@ -991,6 +1031,8 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        check_max_len(&name, MAX_NAME_LEN)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         validate_jurisdiction(&env, &jurisdiction)?;
         let jurisdiction =
             normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
@@ -1116,6 +1158,7 @@ impl ComplyRail {
         jurisdiction: String,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         validate_jurisdiction(&env, &jurisdiction)?;
         let mut v = load_vasp(&env, &address)?;
         let event = VaspMetadataUpdated {
@@ -1183,6 +1226,7 @@ impl ComplyRail {
         amount: i128,
     ) -> Result<(), Error> {
         require_threshold_admin(&env)?;
+        check_max_len(&jurisdiction, MAX_JURISDICTION_LEN)?;
         if !(0..=MAX_THRESHOLD).contains(&amount) {
             return Err(Error::InvalidThreshold);
         }
@@ -1430,6 +1474,7 @@ impl ComplyRail {
         beneficiary: Address,
         asset: Address,
         amount: i128,
+        external_ref: Option<BytesN<32>>,
     ) -> Result<u64, Error> {
         from_vasp.require_auth();
         require_not_paused(&env)?;
@@ -1504,7 +1549,8 @@ impl ComplyRail {
             acknowledged_at: None,
             created_at: now,
             created_ledger: env.ledger().sequence(),
-            expires_at: now + ttl,
+            expires_at: now.checked_add(ttl).ok_or(Error::ExpiryOverflow)?,
+            external_ref: external_ref.clone(),
             resolved_at: None,
             resolved_ledger: None,
         };
@@ -1518,6 +1564,7 @@ impl ComplyRail {
             to_vasp,
             beneficiary: p.beneficiary.clone(),
             asset: p.asset.clone(),
+            external_ref,
             amount,
             requires_attestation,
             created_ledger: env.ledger().sequence(),
@@ -1553,6 +1600,7 @@ impl ComplyRail {
         attestation_hash: BytesN<32>,
         ivms_version: String,
     ) -> Result<(), Error> {
+        check_max_len(&ivms_version, MAX_IVMS_VERSION_LEN)?;
         let mut p = load_payment(&env, payment_id)?;
         p.from_vasp.require_auth();
         require_pending(&p)?;
@@ -1732,6 +1780,8 @@ impl ComplyRail {
         evidence_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
         caller.require_auth();
+        check_max_len(&reason, MAX_REASON_LEN)?;
+        check_reason_not_blank(&reason)?;
         let mut p = load_payment(&env, payment_id)?;
         require_open(&p)?;
         if caller != p.to_vasp && caller != admin(&env)? {

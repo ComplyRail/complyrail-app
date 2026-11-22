@@ -20,6 +20,7 @@ import {
 } from '@/lib/contract'
 import { sealIvmsPayload } from '@/lib/ivms-crypto'
 import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
+import { FIELD_LIMITS, lengthError } from '@/lib/limits'
 
 export function PaymentDetail({ id }: { id: string }) {
   const { payment, loading, error, reload } = usePayment(id)
@@ -124,6 +125,7 @@ export function PaymentDetail({ id }: { id: string }) {
         <Card title="Attestation">
           <Row label="IVMS101 payload hash (sha256)"><span className="font-mono break-all">{payment.attestationHash}</span></Row>
           {payment.ivmsVersion && <Row label="Version">{payment.ivmsVersion}</Row>}
+          {payment.externalRef && <Row label="External ref"><code className="break-all">{payment.externalRef}</code></Row>}
           {payment.attestedAt && <Row label="Submitted">{new Date(payment.attestedAt * 1000).toLocaleString()}</Row>}
         </Card>
       )}
@@ -189,8 +191,9 @@ export function PaymentDetail({ id }: { id: string }) {
             </button>
             <div className="flex gap-2">
               <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
+                maxLength={FIELD_LIMITS.reason}
                 className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm" />
-              <button disabled={tx.pending || !reason}
+              <button disabled={tx.pending || !reason.trim() || !!lengthError('Reason', reason, FIELD_LIMITS.reason)}
                 onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
                 className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
                 Reject

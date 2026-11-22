@@ -39,6 +39,8 @@ export interface PaymentRecord {
   status: PaymentStatus
   requiresAttestation: boolean
   attestationHash?: string
+  /** Optional off-chain reference (32 bytes, hex) supplied at submission. */
+  externalRef?: string
   ivmsVersion?: string
   attestedAt?: number
   createdAt: number
