@@ -51,7 +51,7 @@ cargo test                                         # unit tests
 stellar contract build                             # builds the WASM
 ```
 
-Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) v25.2+ (`soroban-sdk` 29 must be built with `stellar contract build`).
+Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) **v30.0.1** (the same version the GitHub workflows pin; `soroban-sdk` 29 must be built with `stellar contract build`). `contracts/scripts/deploy-testnet.sh` checks the installed version and exits if it does not match.
 
 ## Deploy to testnet
 

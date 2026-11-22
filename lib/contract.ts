@@ -195,6 +195,23 @@ async function write<T>(signer: Signer, method: string, args: Record<string, unk
 
 // ----- reads ---------------------------------------------------------------
 
+/** Max simultaneous RPC simulations per list. The public testnet RPC rate-limits bursts. */
+export const RPC_CONCURRENCY = 5
+
+/** Runs `fn` over `items` with at most `limit` calls in flight. Results keep input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
 export async function getAdmin(): Promise<string> {
   return read<string>('admin')
 }
@@ -206,7 +223,7 @@ export async function isVaspActive(address: string): Promise<boolean> {
 
 export async function listVasps(): Promise<VaspEntry[]> {
   const addresses = await read<string[]>('list_vasps')
-  const raws = await Promise.all(addresses.map(address => read<RawVasp>('get_vasp', { address })))
+  const raws = await mapLimit(addresses, RPC_CONCURRENCY, address => read<RawVasp>('get_vasp', { address }))
   return raws.map(mapVasp)
 }
 
@@ -222,7 +239,7 @@ export async function getVasp(address: string): Promise<VaspEntry | null> {
 export async function listPayments(limit = 100): Promise<PaymentRecord[]> {
   const count = Number(await read<bigint>('payment_count'))
   const ids = Array.from({ length: Math.min(count, limit) }, (_, i) => BigInt(count - 1 - i))
-  const raws = await Promise.all(ids.map(payment_id => read<RawPayment>('get_payment', { payment_id })))
+  const raws = await mapLimit(ids, RPC_CONCURRENCY, payment_id => read<RawPayment>('get_payment', { payment_id }))
   return raws.map(mapPayment)
 }
 
@@ -243,24 +260,94 @@ export async function listThresholds(): Promise<ThresholdRow[]> {
     .filter(r => r.amount > 0n)
 }
 
+export interface AuditWindow {
+  startLedger: number
+  latestLedger: number
+  /** Unix seconds when the window's first ledger closed. Estimated if the RPC cannot report it. */
+  since: number
+  /** True when the wide window failed and the narrow fallback window was used. */
+  fallback: boolean
+  fallbackReason?: string
+}
+
+export interface AuditEventsResult {
+  /** Newest first. */
+  events: AuditEvent[]
+  /** True when the page cap was reached before the window was exhausted; older events are missing. */
+  truncated: boolean
+  window: AuditWindow
+}
+
+const WIDE_WINDOW_LEDGERS = 115_000
+const NARROW_WINDOW_LEDGERS = 17_000
+/** Average testnet ledger interval, used only when the RPC cannot report the close time. */
+const LEDGER_SECONDS = 5
+
+async function windowSince(server: Pick<rpc.Server, 'getLedgers'>, startLedger: number, latest: number): Promise<number> {
+  try {
+    const res = await server.getLedgers({ startLedger, pagination: { limit: 1 } })
+    const closedAt = res.ledgers[0]?.ledgerCloseTime
+    // RPC sends a Unix timestamp string; accept an ISO date too.
+    const seconds = closedAt ? Number(closedAt) : NaN
+    if (Number.isFinite(seconds) && seconds > 0) return Math.floor(seconds)
+    const parsed = closedAt ? Date.parse(closedAt) : NaN
+    if (Number.isFinite(parsed)) return Math.floor(parsed / 1000)
+  } catch {
+    // Fall through to the estimate; the window itself is still valid.
+  }
+  return Math.floor(Date.now() / 1000) - (latest - startLedger) * LEDGER_SECONDS
+}
+
+/** RPC page size for getEvents (the RPC maximum). */
+export const AUDIT_PAGE_SIZE = 1000
+/** Stop following cursors after this many pages (10,000 events). */
+export const AUDIT_MAX_PAGES = 10
+
+/**
+ * Follows getEvents cursors from `startLedger` until a short page (window exhausted)
+ * or `AUDIT_MAX_PAGES` full pages (truncated). The RPC rejects startLedger alongside
+ * a cursor, so only the first request sets it.
+ */
+export async function fetchAllContractEvents(
+  server: Pick<rpc.Server, 'getEvents'>,
+  contractId: string,
+  startLedger: number,
+): Promise<{ events: rpc.Api.EventResponse[]; truncated: boolean }> {
+  const filters = [{ type: 'contract' as const, contractIds: [contractId] }]
+  const events: rpc.Api.EventResponse[] = []
+  let res = await server.getEvents({ startLedger, filters, limit: AUDIT_PAGE_SIZE })
+  for (let page = 1; ; page++) {
+    events.push(...res.events)
+    if (res.events.length < AUDIT_PAGE_SIZE) return { events, truncated: false }
+    if (page >= AUDIT_MAX_PAGES) return { events, truncated: true }
+    res = await server.getEvents({ cursor: res.cursor, filters, limit: AUDIT_PAGE_SIZE })
+  }
+}
+
 /** Contract events from the RPC's retention window (about 7 days on testnet). */
-export async function listAuditEvents(): Promise<AuditEvent[]> {
+export async function listAuditEvents(): Promise<AuditEventsResult> {
   assertConfigured()
   const server = new rpc.Server(config.rpcUrl)
   const latest = (await server.getLatestLedger()).sequence
-  const fetchFrom = (startLedger: number) =>
-    server.getEvents({
-      startLedger,
-      filters: [{ type: 'contract', contractIds: [config.contractId] }],
-      limit: 1000,
-    })
-  let res: rpc.Api.GetEventsResponse
-  try {
-    res = await fetchFrom(Math.max(1, latest - 115_000))
-  } catch {
-    res = await fetchFrom(Math.max(1, latest - 17_000))
+  const attempt = async (span: number) => {
+    const startLedger = Math.max(1, latest - span)
+    const result = await fetchAllContractEvents(server, config.contractId, startLedger)
+    return { ...result, startLedger }
   }
-  return res.events
+  let fallback = false
+  let fallbackReason: string | undefined
+  let window: Awaited<ReturnType<typeof attempt>>
+  try {
+    window = await attempt(WIDE_WINDOW_LEDGERS)
+  } catch (e) {
+    fallback = true
+    fallbackReason = e instanceof Error ? e.message : String(e)
+    if (process.env.NODE_ENV === 'development') {
+      console.warn(`[audit] wide event window failed, using ${NARROW_WINDOW_LEDGERS}-ledger fallback:`, fallbackReason)
+    }
+    window = await attempt(NARROW_WINDOW_LEDGERS)
+  }
+  const events = window.events
     .map(ev =>
       mapEvent({
         id: ev.id,
@@ -273,6 +360,17 @@ export async function listAuditEvents(): Promise<AuditEvent[]> {
     )
     .filter((e): e is AuditEvent => e !== null)
     .reverse()
+  return {
+    events,
+    truncated: window.truncated,
+    window: {
+      startLedger: window.startLedger,
+      latestLedger: latest,
+      since: await windowSince(server, window.startLedger, latest),
+      fallback,
+      fallbackReason,
+    },
+  }
 }
 
 // ----- writes --------------------------------------------------------------
