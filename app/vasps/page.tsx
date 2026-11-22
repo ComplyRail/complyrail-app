@@ -7,7 +7,7 @@ import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { formatAddress, vaspKeyError } from '@/lib/format'
-import { JURISDICTIONS } from '@/lib/config'
+import { JURISDICTIONS, isRegistrableJurisdiction } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { registerVasp, setVaspStatus } from '@/lib/contract'
 import { VaspStatus } from '@/lib/types'
@@ -32,6 +32,8 @@ export default function VaspsPage() {
         ? vaspKeyError(form.publicKeyHex)
         : form.expiresDays && !(Number(form.expiresDays) >= 1)
           ? 'Validity must be at least 1 day; an expiry in the past would deactivate the VASP immediately'
+          : form.jurisdiction && !isRegistrableJurisdiction(form.jurisdiction)
+            ? 'Jurisdiction cannot be "*" — choose a real jurisdiction'
           : null
 
   const handleRegister = async (e: React.FormEvent) => {

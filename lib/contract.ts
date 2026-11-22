@@ -473,11 +473,12 @@ export function releasePayment(signer: Signer, paymentId: string) {
   return write<void>(signer, 'release_payment', { payment_id: BigInt(paymentId), caller: signer.publicKey })
 }
 
-export function rejectPayment(signer: Signer, paymentId: string, reason: string) {
+export function rejectPayment(signer: Signer, paymentId: string, reason: string, evidenceHashHex?: string) {
   return write<void>(signer, 'reject_payment', {
     payment_id: BigInt(paymentId),
     caller: signer.publicKey,
     reason,
+    evidence_hash: evidenceHashHex ? hexToBytes(evidenceHashHex) : undefined,
   })
 }
 

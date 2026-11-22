@@ -29,9 +29,11 @@ originator VASP                     contract                      beneficiary VA
 |---|---|---|
 | `__constructor(admin, threshold_admin, payment_ttl?)` | – | runs at deploy time, so setup can't be front-run; `threshold_admin` should be a different key from `admin`; TTL defaults to 7 days |
 | `transfer_admin(new_admin)` | admin + new admin | |
-| `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | |
+| `register_vasp(address, name, jurisdiction, public_key, expires_at?)` | admin | jurisdiction must not be empty or `"*"` (`InvalidJurisdiction`) |
 | `set_vasp_status(address, status, reason)` | admin | `Active` / `Suspended` / `Revoked`. Suspend and revoke need a non-empty `reason` (max 256 bytes). `Revoked` is final. |
 | `set_vasp_expiry(address, expires_at?)` | admin | |
+| `update_vasp(address, name, jurisdiction)` | admin | same jurisdiction rule as `register_vasp`; emits `vasp_upd` with old and new values; changes apply to payments submitted afterwards, pending payments keep the jurisdiction they were submitted under |
+| `rotate_vasp_key(address, new_key)` | admin | replaces the encryption key only; emits `vasp_upd` with sha256 of old and new keys; payments are unaffected |
 | `get_vasp`, `is_vasp_active`, `list_vasps` | – | read |
 | `set_threshold(asset, jurisdiction, amount)` / `get_threshold` | threshold admin / – | `amount` must be `0 ..= 9223372036854775807` (`i64::MAX`, the classic Stellar asset maximum); larger values fail with `InvalidThreshold`. The threshold admin is a separate role from the admin, so one key cannot both admit a VASP and lower a threshold |
 | `remove_threshold(asset, jurisdiction)` | threshold admin | Fails with `ThresholdNotFound` if no threshold is set for that jurisdiction |
@@ -39,7 +41,7 @@ originator VASP                     contract                      beneficiary VA
 | `submit_payment(from_vasp, to_vasp, beneficiary, asset, amount) -> id` | from_vasp | both VASPs must be active |
 | `submit_attestation(id, hash, ivms_version)` | from_vasp | once per payment |
 | `release_payment(id, caller)` | to_vasp or admin | requires attestation if over threshold |
-| `reject_payment(id, caller, reason)` | to_vasp or admin | refunds originator |
+| `reject_payment(id, caller, reason, evidence_hash?)` | to_vasp or admin | refunds originator; `evidence_hash` is the sha256 of the off-chain evidence document (UTF-8 JSON), emitted in `pay_rej` |
 | `reclaim_expired(id)` | from_vasp | only after `expires_at` |
 | `get_payment`, `payment_count` | – | read |
 

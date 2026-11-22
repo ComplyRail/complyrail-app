@@ -25,7 +25,7 @@
 //! `att_sub`, `pay_rel`, `pay_rej`).
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Bytes, BytesN,
     Env, String, Vec,
 };
 
@@ -86,6 +86,9 @@ pub enum Error {
     ThresholdNotFound = 19,
     /// Jurisdiction code is not on the allowlist.
     UnknownJurisdiction = 20,
+    /// Jurisdiction is empty or the `"*"` wildcard, which is reserved for
+    /// threshold fallback rules and cannot name a VASP's jurisdiction.
+    InvalidJurisdiction = 21,
 }
 
 /// Upper bound on the reason attached to a status change, in bytes.
@@ -216,6 +219,16 @@ fn require_threshold_admin(env: &Env) -> Result<Address, Error> {
     Ok(a)
 }
 
+/// A VASP's jurisdiction must name a real jurisdiction. `"*"` is reserved for
+/// the threshold fallback, so a VASP registered under it would silently take
+/// the fallback rule instead of its jurisdiction's rule.
+fn validate_jurisdiction(env: &Env, jurisdiction: &String) -> Result<(), Error> {
+    if jurisdiction.is_empty() || *jurisdiction == String::from_str(env, "*") {
+        return Err(Error::InvalidJurisdiction);
+    }
+    Ok(())
+}
+
 fn load_vasp(env: &Env, addr: &Address) -> Result<VaspEntry, Error> {
     let key = DataKey::Vasp(addr.clone());
     let v: VaspEntry = env
@@ -225,6 +238,13 @@ fn load_vasp(env: &Env, addr: &Address) -> Result<VaspEntry, Error> {
         .ok_or(Error::VaspNotFound)?;
     bump_persistent(env, &key);
     Ok(v)
+}
+
+/// sha256 of a 32-byte public key, as emitted in `VaspKeyRotated`.
+fn key_hash(env: &Env, key: &BytesN<32>) -> BytesN<32> {
+    env.crypto()
+        .sha256(&Bytes::from_slice(env, &key.to_array()))
+        .to_bytes()
 }
 
 fn save_vasp(env: &Env, v: &VaspEntry) {
@@ -385,6 +405,31 @@ pub struct VaspUpdated {
     pub reason: String,
 }
 
+/// Emitted on `vasp_upd` when a VASP rotates its encryption key. Carries
+/// sha256 hashes of the old and new keys so the audit log can show the change
+/// without re-publishing key material.
+#[contractevent(topics = ["vasp_upd"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaspKeyRotated {
+    #[topic]
+    pub address: Address,
+    pub old_key_hash: BytesN<32>,
+    pub new_key_hash: BytesN<32>,
+}
+
+/// Emitted on `vasp_upd` when a VASP's legal name or jurisdiction changes.
+/// Carries both the old and new values so the audit log shows the exact change.
+#[contractevent(topics = ["vasp_upd"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaspMetadataUpdated {
+    #[topic]
+    pub address: Address,
+    pub old_name: String,
+    pub new_name: String,
+    pub old_jurisdiction: String,
+    pub new_jurisdiction: String,
+}
+
 #[contractevent(topics = ["thr_set"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThresholdSet {
@@ -439,6 +484,9 @@ pub struct PaymentRejected {
     #[topic]
     pub id: u64,
     pub reason: String,
+    /// Optional sha256 of the evidence supporting the rejection (see
+    /// `reject_payment` for the expected format). `None` for expiry reclaims.
+    pub evidence_hash: Option<BytesN<32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +546,7 @@ impl ComplyRail {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         require_admin(&env)?;
+        validate_jurisdiction(&env, &jurisdiction)?;
         let jurisdiction =
             normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         require_future_expiry(&env, expires_at)?;
@@ -585,6 +634,56 @@ impl ComplyRail {
             reason: String::from_str(&env, ""),
         }
         .publish(&env);
+        Ok(())
+    }
+
+    /// Replace a VASP's encryption key (admin only). Only the key used to
+    /// encrypt future IVMS101 payloads changes: payments already in flight
+    /// keep their from/to VASP addresses, amounts, status and attestation.
+    pub fn rotate_vasp_key(env: Env, address: Address, new_key: BytesN<32>) -> Result<(), Error> {
+        require_admin(&env)?;
+        let mut v = load_vasp(&env, &address)?;
+        let old_key_hash = key_hash(&env, &v.public_key);
+        let new_key_hash = key_hash(&env, &new_key);
+        v.public_key = new_key;
+        save_vasp(&env, &v);
+        VaspKeyRotated {
+            address,
+            old_key_hash,
+            new_key_hash,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Change a VASP's legal name and/or jurisdiction (admin only).
+    ///
+    /// Jurisdiction decides which threshold applies, so the change only
+    /// affects payments submitted after it. A payment's `requires_attestation`
+    /// is fixed when it is submitted, so pending payments keep the jurisdiction
+    /// they were submitted under: neither their attestation requirement nor
+    /// their release path changes. The old and new values are emitted on
+    /// `vasp_upd`.
+    pub fn update_vasp(
+        env: Env,
+        address: Address,
+        name: String,
+        jurisdiction: String,
+    ) -> Result<(), Error> {
+        require_admin(&env)?;
+        validate_jurisdiction(&env, &jurisdiction)?;
+        let mut v = load_vasp(&env, &address)?;
+        let event = VaspMetadataUpdated {
+            address: address.clone(),
+            old_name: v.name.clone(),
+            new_name: name.clone(),
+            old_jurisdiction: v.jurisdiction.clone(),
+            new_jurisdiction: jurisdiction.clone(),
+        };
+        v.name = name;
+        v.jurisdiction = jurisdiction;
+        save_vasp(&env, &v);
+        event.publish(&env);
         Ok(())
     }
 
@@ -837,11 +936,19 @@ impl ComplyRail {
 
     /// Beneficiary VASP or admin rejects a held payment; funds go back to the
     /// originating VASP. `reason` is emitted for the audit trail.
+    ///
+    /// `evidence_hash` is optional. When given it must be the sha256 of the
+    /// evidence document that justified the rejection, serialised as UTF-8
+    /// JSON and exchanged off-chain between the VASPs and the admin. Only the
+    /// hash is emitted in `pay_rej`; the document itself, and any personal
+    /// data in it, never touches the ledger. Anyone reading the audit log can
+    /// check a disclosed document by hashing it and comparing.
     pub fn reject_payment(
         env: Env,
         payment_id: u64,
         caller: Address,
         reason: String,
+        evidence_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
         caller.require_auth();
         let mut p = load_payment(&env, payment_id)?;
@@ -854,6 +961,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason,
+            evidence_hash,
         }
         .publish(&env);
         Ok(())
@@ -873,6 +981,7 @@ impl ComplyRail {
         PaymentRejected {
             id: payment_id,
             reason: String::from_str(&env, "expired"),
+            evidence_hash: None,
         }
         .publish(&env);
         Ok(())

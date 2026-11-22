@@ -80,3 +80,9 @@ export function assetSymbol(contractId: string): string {
 }
 
 export { JURISDICTIONS } from './jurisdictions'
+
+/** Mirrors the contract's `InvalidJurisdiction` rule: `"*"` is reserved for the threshold fallback. */
+export function isRegistrableJurisdiction(jurisdiction: string): boolean {
+  const j = jurisdiction.trim()
+  return j !== '' && j !== '*'
+}
