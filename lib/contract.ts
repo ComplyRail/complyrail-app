@@ -1,6 +1,6 @@
 import { contract, rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { ASSETS, JURISDICTIONS, config, isContractConfigured } from './config'
-import { bytesToHex, fromUnits, hexToBytes } from './format'
+import { bytesToHex, fromUnits, hexToBytes, parseVaspKey } from './format'
 import { withRetry } from './retry'
 import {
   AuditEvent,
@@ -383,7 +383,7 @@ export function registerVasp(
     address: v.address,
     name: v.name,
     jurisdiction: v.jurisdiction,
-    public_key: hexToBytes(v.publicKeyHex),
+    public_key: parseVaspKey(v.publicKeyHex),
     expires_at: v.expiresAt === undefined ? undefined : BigInt(v.expiresAt),
   })
 }

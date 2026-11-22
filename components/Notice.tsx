@@ -81,6 +81,13 @@ export function TxStatus({ pending, error, done }: { pending: boolean; error: st
 }
 
 export function ExplorerLink({ kind, id, children }: { kind: 'contract' | 'account' | 'tx'; id: string; children?: React.ReactNode }) {
+  if (!explorerBase) {
+    return (
+      <span className="text-muted-foreground" title="No block explorer is configured for this network">
+        {children ?? id} <span className="text-xs">(unknown network)</span>
+      </span>
+    )
+  }
   return (
     <a href={`${explorerBase}/${kind}/${id}`} target="_blank" rel="noreferrer" className="text-primary hover:underline">
       {children ?? id}
