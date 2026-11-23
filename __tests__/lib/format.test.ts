@@ -7,6 +7,7 @@ import {
   formatHash,
   fromUnits,
   hexToBytes,
+  isStellarAddressOrHash,
   MAX_I128,
   parseVaspKey,
   toUnits,
@@ -62,6 +63,33 @@ describe('display helpers', () => {
     expect(formatAddress('GABCDEFGHIJKLMNOP')).toBe('GABC...MNOP')
     expect(formatAddress('short')).toBe('short')
     expect(formatHash('0123456789abcdef0123')).toBe('012345...ef0123')
+  })
+})
+
+describe('isStellarAddressOrHash', () => {
+  const G = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7'
+  const C = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'
+  const HASH = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+
+  it('recognises a Stellar public key (G...)', () => {
+    expect(isStellarAddressOrHash(G)).toBe(true)
+  })
+
+  it('recognises a Stellar contract ID (C...)', () => {
+    expect(isStellarAddressOrHash(C)).toBe(true)
+  })
+
+  it('recognises a 64-hex transaction hash', () => {
+    expect(isStellarAddressOrHash(HASH)).toBe(true)
+  })
+
+  it('does not shorten a plain reason string', () => {
+    expect(isStellarAddressOrHash('beneficiary name mismatch on account')).toBe(false)
+  })
+
+  it('does not shorten a short or empty string', () => {
+    expect(isStellarAddressOrHash('')).toBe(false)
+    expect(isStellarAddressOrHash('short')).toBe(false)
   })
 })
 

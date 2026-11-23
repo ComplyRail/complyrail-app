@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useAuditEvents } from '@/lib/hooks'
-import { formatAddress } from '@/lib/format'
+import { formatAddress, isStellarAddressOrHash } from '@/lib/format'
 import { ExplorerLink } from '@/components/Notice'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
 
@@ -37,6 +37,12 @@ export default function AuditLogPage() {
   }
 
   const exportCSV = () => {
+    const escapeCsvCell = (cell: string): string => {
+      // Neutralise formula injection: cells starting with =, +, -, @ are prefixed with '.
+      const safe = /^[=+\-@]/.test(cell) ? `'${cell}` : cell
+      // Escape embedded double-quotes by doubling them, then wrap in quotes.
+      return `"${safe.replace(/"/g, '""')}"`
+    }
     const csv = [
       ['ID', 'Timestamp', 'Ledger', 'Tx hash', 'Type', 'Subject', 'Description', 'Details'],
       ...filteredEvents.map(e => [
@@ -47,27 +53,26 @@ export default function AuditLogPage() {
         e.type,
         e.subject,
         e.description,
-        JSON.stringify(e.details ?? {}).replace(/"/g, "'"),
+        JSON.stringify(e.details ?? {}),
       ]),
     ]
-    const csvContent = csv.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
-    const blob = new Blob([csvContent], { type: 'text/csv' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `audit-log-${Date.now()}.csv`
-    a.click()
-    window.URL.revokeObjectURL(url)
+    const csvContent = csv.map(row => row.map(cell => escapeCsvCell(cell)).join(',')).join('\n')
+    triggerDownload(new Blob([csvContent], { type: 'text/csv' }), `audit-log-${Date.now()}.csv`)
   }
 
   const exportJSON = () => {
     const json = JSON.stringify(filteredEvents, null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
+    triggerDownload(new Blob([json], { type: 'application/json' }), `audit-log-${Date.now()}.json`)
+  }
+
+  /** Create a temporary object URL, trigger a download, then immediately revoke. */
+  function triggerDownload(blob: Blob, filename: string): void {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `audit-log-${Date.now()}.json`
+    a.download = filename
     a.click()
+    window.URL.revokeObjectURL(url)
   }
 
   if (loading) {
@@ -161,7 +166,7 @@ export default function AuditLogPage() {
                 {event.description}
                 {event.details && Object.keys(event.details).length > 0 && (
                   <div className="text-xs text-muted-foreground">
-                    {Object.entries(event.details).map(([k, v]) => `${k}: ${v.length > 20 ? formatAddress(v) : v}`).join(' · ')}
+                    {Object.entries(event.details).map(([k, v]) => `${k}: ${isStellarAddressOrHash(v) ? formatAddress(v) : v}`).join(' · ')}
                   </div>
                 )}
               </>

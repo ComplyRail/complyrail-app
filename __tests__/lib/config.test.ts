@@ -1,7 +1,7 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Asset, Networks } from '@stellar/stellar-sdk'
-import { ASSETS, buildAssetOptions, explorerBaseFor } from '@/lib/config'
+import { ASSETS, buildAssetOptions, explorerBaseFor, verifyAssetContracts } from '@/lib/config'
 
 describe('explorerBaseFor', () => {
   it('links testnet to the testnet explorer', () => {
@@ -54,5 +54,41 @@ describe('buildAssetOptions', () => {
   it('rejects a native asset that also names an issuer', () => {
     expect(() => buildAssetOptions([{ symbol: 'XLM', native: true, issuer: ISSUER }], Networks.TESTNET))
       .toThrow(/must not have an issuer/)
+  })
+})
+
+describe('verifyAssetContracts', () => {
+  beforeEach(() => {
+    // Reset available flags before each test.
+    for (const a of ASSETS) a.available = null
+  })
+
+  it('marks assets available when the name() call succeeds', async () => {
+    // Patch contract.Client.from on the already-imported SDK module.
+    const sdk = await import('@stellar/stellar-sdk')
+    const original = sdk.contract.Client.from
+    sdk.contract.Client.from = vi.fn().mockResolvedValue({
+      name: vi.fn().mockResolvedValue({ result: 'XLM' }),
+    }) as unknown as typeof sdk.contract.Client.from
+
+    const { verifyAssetContracts: verify } = await import('@/lib/config')
+    await verify('https://soroban-testnet.stellar.org', (await import('@stellar/stellar-sdk')).Networks.TESTNET)
+    expect(ASSETS.every(a => a.available === true)).toBe(true)
+
+    sdk.contract.Client.from = original
+  })
+
+  it('marks assets unavailable when the name() call fails', async () => {
+    const sdk = await import('@stellar/stellar-sdk')
+    const original = sdk.contract.Client.from
+    sdk.contract.Client.from = vi.fn().mockResolvedValue({
+      name: vi.fn().mockRejectedValue(new Error('contract not found')),
+    }) as unknown as typeof sdk.contract.Client.from
+
+    const { verifyAssetContracts: verify } = await import('@/lib/config')
+    await verify('https://soroban-testnet.stellar.org', sdk.Networks.TESTNET)
+    expect(ASSETS.every(a => a.available === false)).toBe(true)
+
+    sdk.contract.Client.from = original
   })
 })
