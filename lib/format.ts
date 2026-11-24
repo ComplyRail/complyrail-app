@@ -10,6 +10,12 @@ export function formatHash(hash: string): string {
   return `${hash.slice(0, 6)}...${hash.slice(-6)}`
 }
 
+/** Shorten a long hex value while keeping both ends readable, e.g. for a table cell. */
+export function truncateMiddle(value: string, head = 8, tail = 8): string {
+  if (!value || value.length <= head + tail + 1) return value
+  return `${value.slice(0, head)}…${value.slice(-tail)}`
+}
+
 /**
  * Convert a human amount ("12.5") to the contract's integer units
  * (stroops, 7 decimals). Throws on invalid input instead of rounding.

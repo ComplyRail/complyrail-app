@@ -3,13 +3,15 @@
 import Link from 'next/link'
 import { usePayments } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
-import { assetSymbol } from '@/lib/config'
+import { useWallet } from '@/components/WalletProvider'
+import { assetSymbol, isContractConfigured } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
 import { PaymentStatus } from '@/lib/types'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
 
 export default function PaymentsPage() {
   const { payments, total, hasMore, loadMore, loadingMore, moreError, loading, error } = usePayments()
+  const { address } = useWallet()
 
   const count = (s: PaymentStatus) => payments.filter(p => p.status === s).length
   const awaitingAttestation = payments.filter(
@@ -44,7 +46,13 @@ export default function PaymentsPage() {
         ) : error ? (
           <div className="text-center text-red-600 py-12">Error: {error}</div>
         ) : payments.length === 0 ? (
-          <div className="text-center text-muted-foreground py-12">No payments yet</div>
+          <div className="text-center text-muted-foreground py-12">
+            {!isContractConfigured
+              ? 'The ComplyRail contract is not deployed yet, so there are no payments to show.'
+              : !address
+                ? 'Connect your wallet to see your payments.'
+                : 'No payments yet'}
+          </div>
         ) : (
           <ResponsiveTable
             rows={payments}

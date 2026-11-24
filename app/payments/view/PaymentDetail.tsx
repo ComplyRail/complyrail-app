@@ -9,6 +9,8 @@ import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { assetSymbol } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
+import { CONTRACT_ERRORS } from '@/lib/errors'
+import { rejectBlockReason, releaseBlockReason } from '@/lib/payment-actions'
 import {
   buildIvmsPayload,
   canonicalJson,
@@ -19,8 +21,9 @@ import {
   submitAttestation,
 } from '@/lib/contract'
 import { sealIvmsPayload } from '@/lib/ivms-crypto'
-import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
-import { FIELD_LIMITS, lengthError } from '@/lib/limits'
+import { IVMS101_VERSION, PaymentStatus, VaspStatus } from '@/lib/types'
+import { expiryState } from '@/lib/vasp-expiry'
+import { FIELD_LIMITS } from '@/lib/limits'
 import { verifyIvmsPayload, type PayloadCheck } from '@/lib/ivms'
 
 export function PaymentDetail({ id }: { id: string }) {
@@ -53,7 +56,30 @@ export function PaymentDetail({ id }: { id: string }) {
     setReceivedCheck(json.trim() ? await verifyIvmsPayload(json, payment.attestationHash || '') : null)
   }
 
-  const releaseAllowed = !needsAttestation && (receivedCheck?.status === 'match' || overrideRelease)
+  const receivingVaspActive =
+    !toVasp.vasp ||
+    (toVasp.vasp.status === VaspStatus.Active &&
+      expiryState(toVasp.vasp.expiresAt, clock.now).kind !== 'expired')
+  const actionState = {
+    payment,
+    address,
+    admin,
+    now: clock.now,
+    receivingVaspActive,
+    received: receivedCheck,
+    override: overrideRelease,
+  }
+  const releaseReason = releaseBlockReason(actionState)
+  const rejectReason = rejectBlockReason(actionState, reason)
+
+  // Reasons are shown next to disabled controls rather than replacing them, so
+  // the user can tell a permission problem from a missing attestation and from
+  // a payment that is already resolved.
+  const blockedReason = (testId: string, text: string) => (
+    <p id={testId} data-testid={testId} className="text-xs text-muted-foreground">
+      {text}
+    </p>
+  )
 
   const act = async (label: string, fn: Parameters<typeof tx.run>[1]) => {
     const ok = await tx.run(label, async s => {
@@ -187,14 +213,16 @@ export function PaymentDetail({ id }: { id: string }) {
         <IvmsDecryptPanel recipientPublicKey={toVasp.vasp.publicKey} attestationHash={payment.attestationHash} />
       )}
 
-      {pending && canResolve && (
+      {pending && (
         <Card title="Resolve payment">
           <p className="text-sm text-muted-foreground mb-4">
-            {needsAttestation
-              ? 'Release is blocked until the originating VASP submits an attestation.'
-              : 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'}
+            {!canResolve
+              ? 'Release and reject are only available to the receiving VASP or the admin.'
+              : needsAttestation
+                ? 'Release is blocked until the originating VASP submits an attestation.'
+                : 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'}
           </p>
-          {!needsAttestation && (
+          {canResolve && !needsAttestation && (
             <div className="space-y-2 mb-4">
               <label htmlFor="received-payload" className="block text-sm font-medium">Received IVMS101 payload (JSON)</label>
               <textarea id="received-payload" rows={6} value={received} placeholder="Paste the payload you received off-chain"
@@ -218,36 +246,42 @@ export function PaymentDetail({ id }: { id: string }) {
             </div>
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <button disabled={tx.pending || !releaseAllowed}
-              onClick={() => act('Payment released to beneficiary', s => releasePayment(s, payment.id))}
-              className="px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
-              Release to beneficiary
-            </button>
-            <div className="flex gap-2">
-              <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
-                maxLength={FIELD_LIMITS.reason}
-                className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm" />
-              <button disabled={tx.pending || !reason.trim() || !!lengthError('Reason', reason, FIELD_LIMITS.reason)}
-                onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
-                className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
-                Reject
+            <div className="space-y-1">
+              <button disabled={tx.pending || !!releaseReason}
+                aria-describedby={releaseReason ? 'release-reason' : undefined}
+                onClick={() => act('Payment released to beneficiary', s => releasePayment(s, payment.id))}
+                className="w-full px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
+                Release to beneficiary
               </button>
+              {releaseReason && blockedReason('release-reason', `Release unavailable: ${releaseReason}`)}
+            </div>
+            <div className="space-y-1">
+              <div className="flex gap-2">
+                <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
+                  maxLength={FIELD_LIMITS.reason} disabled={!canResolve}
+                  aria-describedby={rejectReason ? 'reject-reason' : undefined}
+                  className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm disabled:opacity-50" />
+                <button disabled={tx.pending || !!rejectReason}
+                  onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
+                  className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
+                  Reject
+                </button>
+              </div>
+              {rejectReason && blockedReason('reject-reason', `Reject unavailable: ${rejectReason}`)}
             </div>
           </div>
         </Card>
       )}
 
-      {pending && isOriginator && expired && (
-        <button disabled={tx.pending} onClick={() => act('Funds reclaimed', s => reclaimExpired(s, payment.id))}
-          className="w-full mt-4 px-4 py-3 rounded bg-muted hover:bg-muted/80 font-medium disabled:opacity-50">
-          Reclaim expired payment
-        </button>
-      )}
-
-      {pending && !isOriginator && !canResolve && (
-        <p className="text-sm text-muted-foreground">
-          Connect as the originating VASP to attest, or as the receiving VASP / admin to release or reject.
-        </p>
+      {pending && isOriginator && (
+        <div className="mt-4 space-y-1">
+          <button disabled={tx.pending || !expired} onClick={() => act('Funds reclaimed', s => reclaimExpired(s, payment.id))}
+            aria-describedby={expired ? undefined : 'reclaim-reason'}
+            className="w-full px-4 py-3 rounded bg-muted hover:bg-muted/80 font-medium disabled:opacity-50">
+            Reclaim expired payment
+          </button>
+          {!expired && blockedReason('reclaim-reason', `Reclaim unavailable: ${CONTRACT_ERRORS[12]}`)}
+        </div>
       )}
     </Shell>
   )

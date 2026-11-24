@@ -10,6 +10,7 @@ import {
   MAX_I128,
   parseVaspKey,
   toUnits,
+  truncateMiddle,
   vaspKeyError,
 } from '@/lib/format'
 
@@ -100,6 +101,17 @@ describe('toUnits i128 bound', () => {
 
   it('rejects amounts far above the i128 maximum', () => {
     expect(() => toUnits('1' + '0'.repeat(40))).toThrow(/too large/)
+  })
+})
+
+describe('truncateMiddle', () => {
+  it('keeps both ends of a long key', () => {
+    expect(truncateMiddle('0123456789abcdef'.repeat(4))).toBe('01234567…89abcdef')
+  })
+
+  it('leaves short values and empty strings alone', () => {
+    expect(truncateMiddle('short')).toBe('short')
+    expect(truncateMiddle('')).toBe('')
   })
 })
 
