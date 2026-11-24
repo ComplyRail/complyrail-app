@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildIvmsPayload,
   externalRefArg,
+  groupThresholds,
   mapEvent,
   mapPayment,
   mapThresholds,
@@ -119,20 +120,45 @@ describe('pageBounds', () => {
 })
 
 describe('mapThresholds', () => {
-  it('converts tuples to rows and drops zero amounts', () => {
+  it('converts tuples to rows, keeps unlisted jurisdictions and drops zero amounts', () => {
     const rows = mapThresholds([
       [G1, 'US', 3_000n],
       [G1, '*', 0n],
       [G2, 'GB', '250'],
+      [G2, 'BR', 400n],
     ])
     expect(rows).toEqual([
       { asset: G1, jurisdiction: 'US', amount: 3_000n },
       { asset: G2, jurisdiction: 'GB', amount: 250n },
+      { asset: G2, jurisdiction: 'BR', amount: 400n },
     ])
   })
 
   it('returns an empty list when nothing is configured', () => {
     expect(mapThresholds([])).toEqual([])
+  })
+})
+
+describe('groupThresholds', () => {
+  it('puts a rule for an unlisted jurisdiction in the other group', () => {
+    const us = { asset: G1, jurisdiction: 'US', amount: 3_000n }
+    const fallback = { asset: G1, jurisdiction: '*', amount: 100n }
+    const br = { asset: G2, jurisdiction: 'BR', amount: 400n }
+
+    expect(groupThresholds([us, fallback, br])).toEqual({
+      configured: [us, fallback],
+      other: [br],
+    })
+  })
+
+  it('matches configured codes case-insensitively and keeps unknown codes visible', () => {
+    const lower = { asset: 'CUNKNOWN', jurisdiction: 'us', amount: 1n }
+    const unknown = { asset: G2, jurisdiction: 'ZZ', amount: 2n }
+
+    expect(groupThresholds([lower, unknown])).toEqual({
+      configured: [lower],
+      other: [unknown],
+    })
   })
 })
 
