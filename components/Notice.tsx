@@ -1,7 +1,12 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { explorerBase, isContractConfigured } from '@/lib/config'
+import {
+  configValidation,
+  explorerBase,
+  isContractConfigured,
+  type ConfigValidationResult,
+} from '@/lib/config'
 import { TxFailedError } from '@/lib/contract'
 import { useWallet } from '@/components/WalletProvider'
 import { friendlyError } from '@/lib/errors'
@@ -13,6 +18,47 @@ export function NotDeployedBanner() {
       The ComplyRail contract hasn&apos;t been deployed to testnet yet. Run the <strong>Deploy to testnet</strong> GitHub
       Action; this page reads live contract data once it&apos;s deployed.
     </div>
+  )
+}
+
+/** Shown when runtime configuration has validation errors or a contract ID override mismatch. */
+export function ConfigNoticeBanner({
+  validation = configValidation,
+}: {
+  validation?: ConfigValidationResult
+}) {
+  if (validation.errors.length === 0 && validation.warnings.length === 0) return null
+  return (
+    <>
+      {validation.errors.length > 0 && (
+        <div
+          role="alert"
+          className="bg-red-50 border-b border-red-200 text-red-900 text-sm px-4 py-3 text-center"
+        >
+          <strong>Configuration error:</strong>{' '}
+          {validation.errors.map((e, i) => (
+            <span key={e.code + i}>
+              {i > 0 ? ' ' : ''}
+              {e.message}
+            </span>
+          ))}
+        </div>
+      )}
+      {validation.warnings.length > 0 && (
+        <div
+          role="status"
+          className="bg-yellow-50 border-b border-yellow-200 text-yellow-900 text-sm px-4 py-3 text-center"
+        >
+          <strong>Configuration notice:</strong>{' '}
+          {validation.warnings.map((w, i) => (
+            <span key={w.code + i}>
+              {i > 0 ? ' ' : ''}
+              {w.message}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
   )
 }
 
