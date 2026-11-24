@@ -140,6 +140,13 @@ export function mapEvent(e: {
   if (details.amount && (type === 'pay_sub' || type === 'pay_rel' || type === 'pay_recl' || type === 'thr_set')) {
     details.amount = fromUnits(details.amount)
   }
+  if (type === 'thr_set') {
+    if (details.previous) {
+      details.previous = fromUnits(details.previous)
+    } else {
+      delete details.previous
+    }
+  }
   return {
     id: e.id,
     ledger: e.ledger,
