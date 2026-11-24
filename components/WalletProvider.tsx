@@ -42,20 +42,47 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   // Restore a previous session.
   useEffect(() => {
+    let cancelled = false
     let saved: { walletId: string; address: string } | null = null
     try {
-      saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+      if (parsed && typeof parsed.walletId === 'string' && typeof parsed.address === 'string') saved = parsed
     } catch {
       /* storage unavailable */
     }
     if (!saved) return
+    const session = saved
+
+    const forgetSavedSession = () => {
+      try {
+        localStorage.removeItem(STORAGE_KEY)
+      } catch {
+        return
+      }
+    }
+
     loadKit()
-      .then(kit => {
-        kit.setWallet(saved!.walletId)
-        setWalletId(saved!.walletId)
-        setAddress(saved!.address)
+      .then(async kit => {
+        kit.setWallet(session.walletId)
+        const { address: current } = await kit.fetchAddress()
+        if (cancelled) return
+        if (current !== session.address) {
+          forgetSavedSession()
+          setError('Your saved wallet session is out of date. Reconnect your wallet to continue.')
+          return
+        }
+        setWalletId(session.walletId)
+        setAddress(session.address)
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (cancelled) return
+        forgetSavedSession()
+        setError('Could not restore your wallet session. Reconnect your wallet to continue.')
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [loadKit])
 
   const connect = useCallback(async () => {
