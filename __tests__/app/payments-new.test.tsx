@@ -87,3 +87,74 @@ describe('Submit Payment balance check', () => {
     expect(screen.getByRole('button', { name: /sign & submit/i })).not.toBeDisabled()
   })
 })
+
+describe('Payment draft sessionStorage persistence', () => {
+  beforeEach(() => {
+    sessionStorage.clear()
+    getAssetBalance.mockReset()
+    submitPayment.mockReset()
+    getAssetBalance.mockResolvedValue(25_000_000n)
+  })
+
+  it('saves form inputs into sessionStorage keyed by wallet address', async () => {
+    const { container } = render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('Available: 2.5'))
+
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { name: 'amount', value: '1.25' } })
+    fireEvent.change(screen.getByPlaceholderText('G...'), { target: { name: 'beneficiary', value: 'GBENEFICIARY' } })
+
+    const raw = sessionStorage.getItem('complyrail:payment_draft:GWALLET')
+    expect(raw).not.toBeNull()
+    const draft = JSON.parse(raw!)
+    expect(draft.amount).toBe('1.25')
+    expect(draft.beneficiary).toBe('GBENEFICIARY')
+  })
+
+  it('restores draft data from sessionStorage when mounting', async () => {
+    sessionStorage.setItem(
+      'complyrail:payment_draft:GWALLET',
+      JSON.stringify({
+        toVasp: 'GOTHER',
+        beneficiary: 'GBENEFICIARY123',
+        asset: ASSETS[1].contractId,
+        amount: '2.10',
+        externalRef: 'REF-999',
+      })
+    )
+
+    const { container } = render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance')).toBeInTheDocument())
+
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('2.10')
+    expect((screen.getByPlaceholderText('G...') as HTMLInputElement).value).toBe('GBENEFICIARY123')
+    expect((screen.getByPlaceholderText('Optional reference, invoice ID, or memo') as HTMLInputElement).value).toBe('REF-999')
+    const assetSelect = container.querySelector('select[name="asset"]') as HTMLSelectElement
+    expect(assetSelect.value).toBe(ASSETS[1].contractId)
+  })
+
+  it('clears draft from sessionStorage after successful submission', async () => {
+    submitPayment.mockResolvedValueOnce({ status: 'SUCCESS', hash: '0xabc' })
+
+    sessionStorage.setItem(
+      'complyrail:payment_draft:GWALLET',
+      JSON.stringify({
+        toVasp: 'GOTHER',
+        beneficiary: 'GBENEFICIARY123',
+        asset: ASSETS[0].contractId,
+        amount: '1.5',
+        externalRef: 'REF-1',
+      })
+    )
+
+    render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance')).toBeInTheDocument())
+
+    const submitBtn = screen.getByRole('button', { name: /sign & submit/i })
+    fireEvent.click(submitBtn)
+
+    await waitFor(() => {
+      expect(submitPayment).toHaveBeenCalled()
+      expect(sessionStorage.getItem('complyrail:payment_draft:GWALLET')).toBeNull()
+    })
+  })
+})
