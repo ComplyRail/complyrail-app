@@ -176,7 +176,7 @@ If you change the toolchain or the CLI version, rebuild, confirm the hash, and u
 bash contracts/scripts/deploy-testnet.sh G...YOUR_ADMIN_ADDRESS
 ```
 
-Then set `NEXT_PUBLIC_CONTRACT_ID` for the dashboard (in `.env.local`). The GitHub Pages site reads `contracts/deployments/testnet.json` automatically.
+Then set `NEXT_PUBLIC_CONTRACT_ID` for the dashboard (in `.env.local`). The Vercel deployment reads `contracts/deployments/testnet.json` automatically.
 
 ## Status
 

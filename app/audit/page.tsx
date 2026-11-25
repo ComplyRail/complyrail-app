@@ -98,7 +98,7 @@ export default function AuditLogPage() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold">Audit Log</h1>
           <p className="text-muted-foreground">
-            Live contract events from Stellar RPC (about the last 7 days).{' '}
+            Permanent indexed contract events, with Stellar RPC fallback when the index is empty.{' '}
             <button onClick={reload} className="text-primary hover:underline">Refresh</button>
           </p>
           {auditWindow.since > 0 && (

@@ -376,7 +376,7 @@ export interface AuditEventsResult {
   window: AuditWindow
 }
 
-const WIDE_WINDOW_LEDGERS = 115_000
+export const AUDIT_BACKFILL_LEDGERS = 115_000
 const NARROW_WINDOW_LEDGERS = 17_000
 /** Average testnet ledger interval, used only when the RPC cannot report the close time. */
 const LEDGER_SECONDS = 5
@@ -441,7 +441,7 @@ export async function listAuditEvents(): Promise<AuditEventsResult> {
   let fallbackReason: string | undefined
   let window: Awaited<ReturnType<typeof attempt>>
   try {
-    window = await attempt(WIDE_WINDOW_LEDGERS)
+    window = await attempt(AUDIT_BACKFILL_LEDGERS)
   } catch (e) {
     fallback = true
     fallbackReason = e instanceof Error ? e.message : String(e)
