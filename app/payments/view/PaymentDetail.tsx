@@ -153,15 +153,24 @@ export function PaymentDetail({ id }: { id: string }) {
             receiving VASP over your Travel Rule channel so they can verify it.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input required placeholder="Originator full name" value={names.originator}
-              onChange={e => setNames({ ...names, originator: e.target.value })}
-              className="px-3 py-2 border border-border rounded bg-background" />
-            <input required placeholder="Originator account (customer account number)" value={names.originatorAccount}
-              onChange={e => setNames({ ...names, originatorAccount: e.target.value })}
-              className="px-3 py-2 border border-border rounded bg-background" />
-            <input required placeholder="Beneficiary full name" value={names.beneficiary}
-              onChange={e => setNames({ ...names, beneficiary: e.target.value })}
-              className="px-3 py-2 border border-border rounded bg-background" />
+            <div className="space-y-1">
+              <label htmlFor="attestation-originator-name" className="block text-sm font-medium">Originator full name (required)</label>
+              <input id="attestation-originator-name" required placeholder="Full name" value={names.originator}
+                onChange={e => setNames({ ...names, originator: e.target.value })}
+                className="w-full px-3 py-2 border border-border rounded bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="attestation-originator-account" className="block text-sm font-medium">Originator account (customer account number, required)</label>
+              <input id="attestation-originator-account" required placeholder="Customer account number" value={names.originatorAccount}
+                onChange={e => setNames({ ...names, originatorAccount: e.target.value })}
+                className="w-full px-3 py-2 border border-border rounded bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="attestation-beneficiary-name" className="block text-sm font-medium">Beneficiary full name (required)</label>
+              <input id="attestation-beneficiary-name" required placeholder="Full name" value={names.beneficiary}
+                onChange={e => setNames({ ...names, beneficiary: e.target.value })}
+                className="w-full px-3 py-2 border border-border rounded bg-background" />
+            </div>
           </div>
           <button type="submit" disabled={tx.pending}
             className="w-full px-4 py-2 rounded bg-blue-600 text-white hover:opacity-90 disabled:opacity-50">
