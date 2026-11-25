@@ -104,6 +104,12 @@ describe('Submit Payment attestation preview', () => {
   const typeAmount = (value: string) =>
     fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { name: 'amount', value } })
 
+  /** Renders and waits for the balance fetch, so its state update lands inside act(). */
+  const renderPage = async () => {
+    render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('Available:'))
+  }
+
   beforeEach(() => {
     getAssetBalance.mockReset()
     getAssetBalance.mockResolvedValue(1_000_000_000_000n)
@@ -112,7 +118,7 @@ describe('Submit Payment attestation preview', () => {
   })
 
   it('says the payment settles immediately below the threshold', async () => {
-    render(<NewPaymentPage />)
+    await renderPage()
     typeAmount('2.5')
 
     const preview = screen.getByTestId('attestation-preview')
@@ -121,7 +127,7 @@ describe('Submit Payment attestation preview', () => {
   })
 
   it('warns that an attestation is required at exactly the threshold', async () => {
-    render(<NewPaymentPage />)
+    await renderPage()
     typeAmount('100')
 
     const preview = screen.getByTestId('attestation-preview')
@@ -131,7 +137,7 @@ describe('Submit Payment attestation preview', () => {
   })
 
   it('warns that an attestation is required above the threshold', async () => {
-    render(<NewPaymentPage />)
+    await renderPage()
     typeAmount('250.5')
 
     expect(screen.getByTestId('attestation-preview').textContent).toMatch(/attestation required/i)
@@ -139,7 +145,7 @@ describe('Submit Payment attestation preview', () => {
 
   it('fails closed when no threshold rule exists (0 by default)', async () => {
     hookState.threshold = { threshold: 0n, loading: false }
-    render(<NewPaymentPage />)
+    await renderPage()
     typeAmount('0.01')
 
     expect(screen.getByTestId('attestation-preview').textContent).toMatch(/attestation required/i)
@@ -147,7 +153,7 @@ describe('Submit Payment attestation preview', () => {
 
   it('does not claim either state while the threshold is still loading', async () => {
     hookState.threshold = { threshold: null, loading: true }
-    render(<NewPaymentPage />)
+    await renderPage()
     typeAmount('2.5')
 
     const preview = screen.getByTestId('attestation-preview')
@@ -156,8 +162,7 @@ describe('Submit Payment attestation preview', () => {
   })
 
   it('shows nothing before an amount is entered', async () => {
-    render(<NewPaymentPage />)
-    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('Available:'))
+    await renderPage()
 
     expect(screen.queryByTestId('attestation-preview')).toBeNull()
   })
@@ -165,7 +170,7 @@ describe('Submit Payment attestation preview', () => {
   it('shows nothing when the connected wallet is not a registered VASP', async () => {
     // A jurisdiction is what selects the threshold; without one there is no rule to preview.
     hookState.vasp = { vasp: null }
-    render(<NewPaymentPage />)
+    await renderPage()
     typeAmount('2.5')
 
     expect(screen.queryByTestId('attestation-preview')).toBeNull()
