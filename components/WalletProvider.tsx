@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { config } from '@/lib/config'
 import { clearClientCache, type Signer } from '@/lib/contract'
+import { assertSignedTransactionSource } from '@/lib/wallet'
 
 interface WalletState {
   address?: string
@@ -100,10 +101,21 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return {
       publicKey: address,
       walletId,
-      signTransaction: async (xdr: string) => {
-        const kit = await loadKit()
-        return kit.signTransaction(xdr, { networkPassphrase: config.networkPassphrase, address })
-      },
+     signTransaction: async (xdr: string) => {
+  const kit = await loadKit()
+  const result = await kit.signTransaction(xdr, {
+    networkPassphrase: config.networkPassphrase,
+    address,
+  })
+
+  assertSignedTransactionSource(
+    result.signedTxXdr,
+    address,
+    config.networkPassphrase,
+  )
+
+  return result
+},
     }
   }, [address, walletId, loadKit])
 
