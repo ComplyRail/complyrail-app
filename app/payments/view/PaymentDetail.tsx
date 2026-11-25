@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
+import { useAdmin, useAuditEvents, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { IvmsDecryptPanel } from './IvmsDecryptPanel'
 import { ClockWarning } from '@/components/ClockWarning'
@@ -29,6 +29,12 @@ export function PaymentDetail({ id }: { id: string }) {
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
   const { admin } = useAdmin()
+  const {
+    events: auditEvents,
+    truncated: auditEventsTruncated,
+    loading: auditEventsLoading,
+    error: auditEventsError,
+  } = useAuditEvents()
   const { address } = useWallet()
   const tx = useTx()
   const [names, setNames] = useState({ originator: '', originatorAccount: '', beneficiary: '' })
@@ -47,6 +53,58 @@ export function PaymentDetail({ id }: { id: string }) {
   const canResolve = !!address && (address === payment.toVasp || address === admin)
   const needsAttestation = payment.requiresAttestation && !payment.attestationHash
   const expired = clock.now >= payment.expiresAt
+  const attestationEvents = auditEvents
+    .filter(event => (
+      (event.type === 'att_sub' || event.type === 'att_amd') &&
+      event.subject === payment.id
+    ))
+    .sort((a, b) => a.ledger - b.ledger || a.timestamp - b.timestamp)
+  const attestationTimeline: {
+    id: string
+    hash: string | undefined
+    version: string | undefined
+    timestamp: number
+    label: string
+  }[] = []
+  for (const event of attestationEvents) {
+    if (event.type === 'att_sub') {
+      attestationTimeline.push({
+        id: event.id,
+        hash: event.details?.hash,
+        version: event.details?.ivms_version,
+        timestamp: event.timestamp,
+        label: event.description,
+      })
+      continue
+    }
+
+    const previousHash = event.details?.old_hash
+    if (previousHash && !attestationTimeline.some(item => item.hash === previousHash)) {
+      attestationTimeline.push({
+        id: `${event.id}-previous`,
+        hash: previousHash,
+        version: undefined,
+        timestamp: event.timestamp,
+        label: 'Previous attestation',
+      })
+    }
+    attestationTimeline.push({
+      id: event.id,
+      hash: event.details?.new_hash,
+      version: event.details?.ivms_version,
+      timestamp: event.timestamp,
+      label: event.description,
+    })
+  }
+  if (payment.attestationHash && !attestationTimeline.some(item => item.hash === payment.attestationHash)) {
+    attestationTimeline.push({
+      id: `current-${payment.id}`,
+      hash: payment.attestationHash,
+      version: payment.ivmsVersion,
+      timestamp: payment.attestedAt ?? payment.createdAt,
+      label: 'Current attestation (event not available)',
+    })
+  }
 
   const checkReceived = async (json: string) => {
     setReceived(json)
@@ -132,12 +190,33 @@ export function PaymentDetail({ id }: { id: string }) {
         </Card>
       </div>
 
-      {payment.attestationHash && (
+      {(payment.attestationHash || attestationTimeline.length > 0) && (
         <Card title="Attestation">
-          <Row label="IVMS101 payload hash (sha256)"><span className="font-mono break-all">{payment.attestationHash}</span></Row>
-          {payment.ivmsVersion && <Row label="Version">{payment.ivmsVersion}</Row>}
+          <p className="text-xs text-muted-foreground">
+            Attestation events available from the contract RPC are shown below; older events may no longer be retained.
+          </p>
+          {auditEventsLoading && <p className="text-sm text-muted-foreground">Loading attestation events…</p>}
+          {auditEventsError && (
+            <p role="alert" className="text-sm text-red-600">Unable to load attestation history: {auditEventsError}</p>
+          )}
+          {auditEventsTruncated && (
+            <p role="status" className="text-sm text-yellow-800">
+              The event limit was reached; some older attestation events may be missing.
+            </p>
+          )}
+          <ol aria-label="Attestation history" className="space-y-4">
+            {attestationTimeline.map(item => (
+              <li key={item.id} className="border-l-2 border-border pl-4">
+                <p className="font-medium">{item.label}</p>
+                <p className="text-xs text-muted-foreground">{new Date(item.timestamp * 1000).toLocaleString()}</p>
+                <Row label="IVMS101 payload hash (sha256)">
+                  <span className="font-mono break-all">{item.hash ?? 'Unavailable'}</span>
+                </Row>
+                <Row label="Version">{item.version ?? 'Unknown'}</Row>
+              </li>
+            ))}
+          </ol>
           {payment.externalRef && <Row label="External ref"><code className="break-all">{payment.externalRef}</code></Row>}
-          {payment.attestedAt && <Row label="Submitted">{new Date(payment.attestedAt * 1000).toLocaleString()}</Row>}
         </Card>
       )}
 
