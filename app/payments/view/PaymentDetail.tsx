@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
+import { invalidatePaymentQueries, useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { IvmsDecryptPanel } from './IvmsDecryptPanel'
 import { ClockWarning } from '@/components/ClockWarning'
@@ -20,11 +20,23 @@ import {
 } from '@/lib/contract'
 import { sealIvmsPayload } from '@/lib/ivms-crypto'
 import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
-import { FIELD_LIMITS, lengthError } from '@/lib/limits'
+import { FIELD_LIMITS, byteLength, lengthError } from '@/lib/limits'
 import { verifyIvmsPayload, type PayloadCheck } from '@/lib/ivms'
 
+/**
+ * Common rejection reasons. Operators pick one of these instead of free-typing
+ * a different wording every time; the input stays editable for anything else.
+ */
+export const REJECT_REASON_PRESETS = [
+  'Missing or invalid Travel Rule data',
+  'IVMS101 payload does not match the attested hash',
+  'Beneficiary details incomplete',
+  'Suspected sanctions match',
+  'Cancelled at the request of the originating VASP',
+] as const
+
 export function PaymentDetail({ id }: { id: string }) {
-  const { payment, loading, error, reload } = usePayment(id)
+  const { payment, loading, error } = usePayment(id)
   const clock = useLedgerClock()
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
@@ -47,6 +59,9 @@ export function PaymentDetail({ id }: { id: string }) {
   const canResolve = !!address && (address === payment.toVasp || address === admin)
   const needsAttestation = payment.requiresAttestation && !payment.attestationHash
   const expired = clock.now >= payment.expiresAt
+  // The contract caps the reason in UTF-8 bytes, so counting characters would
+  // let multi-byte text through and the write would fail on-chain.
+  const reasonError = lengthError('Reason', reason, FIELD_LIMITS.reason)
 
   const checkReceived = async (json: string) => {
     setReceived(json)
@@ -60,7 +75,9 @@ export function PaymentDetail({ id }: { id: string }) {
       await fn(s)
       return true
     })
-    if (ok) reload()
+    // Every write changes the payment and the queue it belongs to, so refresh
+    // both by key: this detail view, the payments list and its stat cards.
+    if (ok) invalidatePaymentQueries(payment.id)
   }
 
   const handleAttest = async (e: React.FormEvent) => {
@@ -217,21 +234,44 @@ export function PaymentDetail({ id }: { id: string }) {
               )}
             </div>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-4">
             <button disabled={tx.pending || !releaseAllowed}
               onClick={() => act('Payment released to beneficiary', s => releasePayment(s, payment.id))}
-              className="px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
+              className="w-full px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
               Release to beneficiary
             </button>
-            <div className="flex gap-2">
-              <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
-                maxLength={FIELD_LIMITS.reason}
-                className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm" />
-              <button disabled={tx.pending || !reason.trim() || !!lengthError('Reason', reason, FIELD_LIMITS.reason)}
-                onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
-                className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
-                Reject
-              </button>
+            <div className="space-y-2">
+              <label htmlFor="reject-reason" className="block text-sm font-medium">Rejection reason</label>
+              <div className="flex flex-wrap gap-2">
+                {REJECT_REASON_PRESETS.map(preset => (
+                  <button key={preset} type="button" onClick={() => setReason(preset)}
+                    aria-pressed={reason === preset}
+                    className={`px-2 py-1 rounded border text-xs ${
+                      reason === preset
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-card border-border hover:bg-muted'
+                    }`}>
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input id="reject-reason" placeholder="Reason" value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  maxLength={FIELD_LIMITS.reason}
+                  aria-describedby="reject-reason-count"
+                  className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm" />
+                <button disabled={tx.pending || !reason.trim() || !!reasonError}
+                  onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
+                  className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
+                  Reject
+                </button>
+              </div>
+              <p id="reject-reason-count" data-testid="reason-bytes"
+                className={`text-xs ${reasonError ? 'text-red-600' : 'text-muted-foreground'}`}>
+                {byteLength(reason)} / {FIELD_LIMITS.reason} bytes
+              </p>
+              {reasonError && <p role="alert" className="text-sm text-red-600">{reasonError}</p>}
             </div>
           </div>
         </Card>

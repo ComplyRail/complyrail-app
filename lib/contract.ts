@@ -427,6 +427,17 @@ export async function listThresholds(): Promise<ThresholdRow[]> {
   return mapThresholds(await read<RawThreshold[]>('list_thresholds'))
 }
 
+/**
+ * Threshold that applies to a payment from `jurisdiction`, in the asset's
+ * smallest unit. `get_threshold` resolves the exact rule, then the `"*"`
+ * fallback, and answers 0 when neither exists (fail closed), so this matches
+ * what `submit_payment` compares against — including an explicit 0 rule, which
+ * `list_thresholds` deliberately omits.
+ */
+export async function getThreshold(asset: string, jurisdiction: string): Promise<bigint> {
+  return BigInt(await read<bigint | number | string>('get_threshold', { asset, jurisdiction }))
+}
+
 /** Contract events from the RPC's retention window (about 7 days on testnet). */
 export async function listAuditEvents(): Promise<AuditEventsResult> {
   assertConfigured()

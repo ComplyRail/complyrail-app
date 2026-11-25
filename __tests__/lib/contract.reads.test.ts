@@ -36,6 +36,10 @@ vi.mock('@stellar/stellar-sdk', async orig => {
         },
       }))
     },
+    async get_threshold({ asset, jurisdiction }: { asset: string; jurisdiction: string }) {
+      state.calls.push(`get_threshold:${asset}:${jurisdiction}`)
+      return { result: 500n }
+    },
     async payment_count() {
       state.calls.push('payment_count')
       return { result: state.paymentCount }
@@ -69,7 +73,7 @@ vi.mock('@stellar/stellar-sdk', async orig => {
   return { ...actual, contract: { ...actual.contract, Client: { from: async () => fakeClient } } }
 })
 
-import { listPayments, listVasps, RPC_CONCURRENCY } from '@/lib/contract'
+import { getThreshold, listPayments, listVasps, RPC_CONCURRENCY } from '@/lib/contract'
 
 beforeEach(() => {
   state.calls = []
@@ -98,6 +102,11 @@ describe('RPC read batching', () => {
     expect(state.calls.filter(c => c === 'list_vasps')).toHaveLength(3)
     expect(state.calls.filter(c => c === 'get_vasp')).toHaveLength(250)
     expect(state.maxInFlight).toBeLessThanOrEqual(RPC_CONCURRENCY)
+  })
+
+  it('getThreshold reads the rule for the selected asset and originator jurisdiction', async () => {
+    expect(await getThreshold('CASSET', 'US')).toBe(500n)
+    expect(state.calls).toEqual(['get_threshold:CASSET:US'])
   })
 
   it('listPayments fetches exactly one page of the requested size', async () => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useRole, useVasps } from '@/lib/hooks'
+import { useRole, useThreshold, useVasp, useVasps } from '@/lib/hooks'
 import { TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { ASSETS, assetSymbol } from '@/lib/config'
@@ -28,6 +28,10 @@ export default function NewPaymentPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [balance, setBalance] = useState<bigint | null>(null)
   const [balanceError, setBalanceError] = useState(false)
+  // The contract picks the threshold by the originator's jurisdiction, so the
+  // preview has to look it up the same way rather than assuming a flat limit.
+  const { vasp: originVasp } = useVasp(address ?? '')
+  const { threshold, loading: thresholdLoading } = useThreshold(form.asset, originVasp?.jurisdiction)
 
   // Refresh the connected wallet's balance whenever the wallet or asset changes.
   useEffect(() => {
@@ -51,6 +55,25 @@ export default function NewPaymentPage() {
     }
   })()
   const overBalance = parsedAmount !== null && exceedsBalance(parsedAmount, balance)
+
+  // Mirrors `submit_payment`: amount >= threshold needs an attestation, and a
+  // missing rule reads as 0, so the preview fails closed like the contract does.
+  const attestationPreview = (() => {
+    if (!address || !originVasp?.jurisdiction || parsedAmount === null || parsedAmount <= 0n) return null
+    if (thresholdLoading || threshold === null) {
+      return { tone: 'checking' as const, text: 'Checking the Travel Rule threshold…' }
+    }
+    const limit = `${fromUnits(threshold)} ${assetSymbol(form.asset)} for ${originVasp.jurisdiction}`
+    return parsedAmount >= threshold
+      ? {
+          tone: 'required' as const,
+          text: `Attestation required: this is at or above the ${limit} threshold, so the payment is held in escrow until the receiving VASP releases it.`,
+        }
+      : {
+          tone: 'immediate' as const,
+          text: `Settles immediately: this is below the ${limit} threshold, so the beneficiary is paid in the same transaction.`,
+        }
+  })()
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [e.target.name]: e.target.value }))
@@ -126,6 +149,11 @@ export default function NewPaymentPage() {
                 <input name="amount" inputMode="decimal" value={form.amount} onChange={onChange} placeholder="0.00" required
                   className={inputCls} />
               </Field>
+              {attestationPreview && (
+                <p data-testid="attestation-preview" className={`mt-2 text-sm ${PREVIEW_TONE[attestationPreview.tone]}`}>
+                  {attestationPreview.text}
+                </p>
+              )}
               {address && (
                 <p data-testid="balance" className="mt-2 text-sm text-muted-foreground">
                   {balanceError
@@ -163,6 +191,12 @@ export default function NewPaymentPage() {
 
 const inputCls =
   'w-full px-4 py-2 border border-border rounded bg-background focus:ring-2 focus:ring-primary focus:border-transparent'
+
+const PREVIEW_TONE = {
+  checking: 'text-muted-foreground',
+  required: 'text-orange-700',
+  immediate: 'text-green-700',
+} as const
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
