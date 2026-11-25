@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 import { useAuditEvents } from '@/lib/hooks'
-import { formatAddress } from '@/lib/format'
+import { formatHash } from '@/lib/format'
 import { ExplorerLink } from '@/components/Notice'
+import { CopyableValue } from '@/components/CopyableValue'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
 
 const EVENT_TYPES = [
@@ -155,19 +156,28 @@ export default function AuditLogPage() {
               <span className="inline-block px-2 py-1 rounded bg-muted text-xs font-mono">{event.type}</span>
             ) },
             { header: 'Subject', className: 'text-sm font-mono', cell: event =>
-              /^\d+$/.test(event.subject) ? `#${event.subject}` : formatAddress(event.subject) },
+              /^\d+$/.test(event.subject)
+                ? `#${event.subject}`
+                : <CopyableValue value={event.subject} variant="address" label="Copy subject address" /> },
             { header: 'Description', className: 'text-sm', cell: event => (
               <>
                 {event.description}
                 {event.details && Object.keys(event.details).length > 0 && (
                   <div className="text-xs text-muted-foreground">
-                    {Object.entries(event.details).map(([k, v]) => `${k}: ${v.length > 20 ? formatAddress(v) : v}`).join(' · ')}
+                    {Object.entries(event.details).map(([k, v], i) => (
+                      <span key={k}>
+                        {i > 0 && ' · '}
+                        {k}: {v.length > 20 ? <CopyableValue value={v} label={`Copy ${k}`} /> : v}
+                      </span>
+                    ))}
                   </div>
                 )}
               </>
             ) },
             { header: 'Tx', className: 'text-sm font-mono', cell: event => (
-              <ExplorerLink kind="tx" id={event.txHash}>{event.txHash.slice(0, 8)}</ExplorerLink>
+              <CopyableValue value={event.txHash} label="Copy transaction hash">
+                <ExplorerLink kind="tx" id={event.txHash}>{formatHash(event.txHash)}</ExplorerLink>
+              </CopyableValue>
             ) },
           ]}
         />

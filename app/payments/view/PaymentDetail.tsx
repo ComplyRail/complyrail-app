@@ -6,6 +6,7 @@ import { StatusBadge } from '@/components/StatusBadge'
 import { IvmsDecryptPanel } from './IvmsDecryptPanel'
 import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
+import { CopyableValue } from '@/components/CopyableValue'
 import { useWallet } from '@/components/WalletProvider'
 import { assetSymbol } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
@@ -119,24 +120,36 @@ export function PaymentDetail({ id }: { id: string }) {
         </Card>
         <Card title="Parties">
           <Row label="From VASP">
-            <ExplorerLink kind="account" id={payment.fromVasp}>{formatAddress(payment.fromVasp)}</ExplorerLink>
+            <CopyableValue value={payment.fromVasp} variant="address" label="Copy from VASP address">
+              <ExplorerLink kind="account" id={payment.fromVasp}>{formatAddress(payment.fromVasp)}</ExplorerLink>
+            </CopyableValue>
             {fromVasp.vasp && <span className="text-muted-foreground"> · {fromVasp.vasp.name} ({fromVasp.vasp.jurisdiction})</span>}
           </Row>
           <Row label="To VASP">
-            <ExplorerLink kind="account" id={payment.toVasp}>{formatAddress(payment.toVasp)}</ExplorerLink>
+            <CopyableValue value={payment.toVasp} variant="address" label="Copy to VASP address">
+              <ExplorerLink kind="account" id={payment.toVasp}>{formatAddress(payment.toVasp)}</ExplorerLink>
+            </CopyableValue>
             {toVasp.vasp && <span className="text-muted-foreground"> · {toVasp.vasp.name} ({toVasp.vasp.jurisdiction})</span>}
           </Row>
           <Row label="Beneficiary">
-            <ExplorerLink kind="account" id={payment.beneficiary}>{formatAddress(payment.beneficiary)}</ExplorerLink>
+            <CopyableValue value={payment.beneficiary} variant="address" label="Copy beneficiary address">
+              <ExplorerLink kind="account" id={payment.beneficiary}>{formatAddress(payment.beneficiary)}</ExplorerLink>
+            </CopyableValue>
           </Row>
         </Card>
       </div>
 
       {payment.attestationHash && (
         <Card title="Attestation">
-          <Row label="IVMS101 payload hash (sha256)"><span className="font-mono break-all">{payment.attestationHash}</span></Row>
+          <Row label="IVMS101 payload hash (sha256)">
+            <CopyableValue value={payment.attestationHash} label="Copy attestation hash" />
+          </Row>
           {payment.ivmsVersion && <Row label="Version">{payment.ivmsVersion}</Row>}
-          {payment.externalRef && <Row label="External ref"><code className="break-all">{payment.externalRef}</code></Row>}
+          {payment.externalRef && (
+            <Row label="External ref">
+              <CopyableValue value={payment.externalRef} label="Copy external reference" />
+            </Row>
+          )}
           {payment.attestedAt && <Row label="Submitted">{new Date(payment.attestedAt * 1000).toLocaleString()}</Row>}
         </Card>
       )}

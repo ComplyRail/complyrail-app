@@ -5,6 +5,7 @@ import { useLedgerClock, useRole, useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
+import { CopyableValue } from '@/components/CopyableValue'
 import { useWallet } from '@/components/WalletProvider'
 import { formatAddress, vaspKeyError } from '@/lib/format'
 import { JURISDICTIONS, isRegistrableJurisdiction } from '@/lib/config'
@@ -104,7 +105,9 @@ export default function VaspsPage() {
   const vaspColumns: Column<VaspEntry>[] = [
     { header: 'Name', className: 'font-medium', cell: v => v.name },
     { header: 'Address', className: 'font-mono text-sm', cell: v => (
-      <ExplorerLink kind="account" id={v.address}>{formatAddress(v.address)}</ExplorerLink>
+      <CopyableValue value={v.address} variant="address" label="Copy VASP address">
+        <ExplorerLink kind="account" id={v.address}>{formatAddress(v.address)}</ExplorerLink>
+      </CopyableValue>
     ) },
     { header: 'Jurisdiction', cell: v => v.jurisdiction },
     { header: 'Status', cell: v => <StatusBadge status={v.status} type="vasp" /> },
