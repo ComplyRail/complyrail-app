@@ -45,7 +45,8 @@ export function PaymentDetail({ id }: { id: string }) {
   const pending = payment.status === PaymentStatus.Pending
   const isOriginator = address === payment.fromVasp
   const canResolve = !!address && (address === payment.toVasp || address === admin)
-  const needsAttestation = payment.requiresAttestation && !payment.attestationHash
+  const attestationPending = payment.requiresAttestation && !payment.attestationHash
+  const verifyPayload = payment.requiresAttestation && !!payment.attestationHash
   const expired = clock.now >= payment.expiresAt
 
   const checkReceived = async (json: string) => {
@@ -53,7 +54,9 @@ export function PaymentDetail({ id }: { id: string }) {
     setReceivedCheck(json.trim() ? await verifyIvmsPayload(json, payment.attestationHash || '') : null)
   }
 
-  const releaseAllowed = !needsAttestation && (receivedCheck?.status === 'match' || overrideRelease)
+  const releaseAllowed =
+    !attestationPending &&
+    (!payment.requiresAttestation || receivedCheck?.status === 'match' || overrideRelease)
 
   const act = async (label: string, fn: Parameters<typeof tx.run>[1]) => {
     const ok = await tx.run(label, async s => {
@@ -145,7 +148,7 @@ export function PaymentDetail({ id }: { id: string }) {
 
       <div className="my-4"><TxStatus {...tx} /></div>
 
-      {pending && isOriginator && needsAttestation && (
+      {pending && isOriginator && attestationPending && (
         <form onSubmit={handleAttest} className="bg-card border border-border rounded-lg p-6 mb-6 space-y-4">
           <h2 className="text-lg font-semibold">Submit IVMS101 attestation</h2>
           <p className="text-sm text-muted-foreground">
@@ -190,11 +193,13 @@ export function PaymentDetail({ id }: { id: string }) {
       {pending && canResolve && (
         <Card title="Resolve payment">
           <p className="text-sm text-muted-foreground mb-4">
-            {needsAttestation
+            {attestationPending
               ? 'Release is blocked until the originating VASP submits an attestation.'
-              : 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'}
+              : verifyPayload
+                ? 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'
+                : 'Confirm the payment details with the originating VASP, then release or reject.'}
           </p>
-          {!needsAttestation && (
+          {verifyPayload && (
             <div className="space-y-2 mb-4">
               <label htmlFor="received-payload" className="block text-sm font-medium">Received IVMS101 payload (JSON)</label>
               <textarea id="received-payload" rows={6} value={received} placeholder="Paste the payload you received off-chain"
