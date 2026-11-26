@@ -414,6 +414,29 @@ export function mapThresholds(rows: RawThreshold[]): ThresholdRow[] {
     .filter(r => r.amount > 0n)
 }
 
+export interface ThresholdGroups {
+  /** Rules for codes offered by the UI, including the `*` fallback. */
+  configured: ThresholdRow[]
+  /** Rules stored on-chain for codes outside the configured list. Still enforced. */
+  other: ThresholdRow[]
+}
+
+/**
+ * Split contract rules into configured and unlisted jurisdictions. The contract
+ * can hold rules for codes the UI does not offer (older deployments, manual
+ * writes), so those rows must stay visible instead of being dropped.
+ */
+export function groupThresholds(rows: ThresholdRow[]): ThresholdGroups {
+  const configured: ThresholdRow[] = []
+  const other: ThresholdRow[] = []
+  for (const row of rows) {
+    const known = JURISDICTIONS.some(j => j.toUpperCase() === row.jurisdiction.toUpperCase())
+    if (known) configured.push(row)
+    else other.push(row)
+  }
+  return { configured, other }
+}
+
 export interface AuditWindow {
   startLedger: number
   latestLedger: number
