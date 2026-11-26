@@ -1,5 +1,7 @@
 // App-side view of the ComplyRail contract types (contracts/complyrail/src/lib.rs).
 
+export type Role = 'admin' | 'vasp' | 'inactive-vasp' | 'viewer'
+
 /** IVMS101 version submitted on-chain and embedded in every payload. Change it in one place only. */
 export const IVMS101_VERSION = 'IVMS101.2023'
 
