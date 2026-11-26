@@ -107,6 +107,12 @@ stellar contract build                             # builds the WASM
 
 Requirements: Rust stable with `rustup target add wasm32v1-none`, and [Stellar CLI](https://developers.stellar.org/docs/tools/cli) **v30.0.1** (the same version the GitHub workflows pin; `soroban-sdk` 29 must be built with `stellar contract build`). `contracts/scripts/deploy-testnet.sh` checks the installed version and exits if it does not match.
 
+## Reading the contract from Rust
+
+Copy-paste examples for querying the contract from an external Rust dApp,
+indexer, or CLI tool are in [docs/contract-reads.md](../docs/contract-reads.md).
+No transaction is submitted for reads; simulation-only calls are free.
+
 ## WASM size budget
 
 CI records the size of the release WASM in the job summary and fails if it grows more than 5% over `contracts/complyrail/wasm-size-baseline.txt`. The file holds the size in bytes of the last accepted build.
