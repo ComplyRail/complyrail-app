@@ -4217,9 +4217,23 @@ fn set_threshold_emits_thr_set() {
     assert_eq!(
         t.env.events().all().filter_by_contract(&t.client.address),
         [ThresholdSet {
+            asset: a.clone(),
+            jurisdiction: s(&t.env, "GB"),
+            previous: None,
+            amount: 500,
+            removed: false,
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+
+    t.client.set_threshold(&a, &s(&t.env, "GB"), &1_500);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [ThresholdSet {
             asset: a,
             jurisdiction: s(&t.env, "GB"),
-            amount: 500,
+            previous: Some(500),
+            amount: 1_500,
             removed: false,
         }
         .to_xdr(&t.env, &t.client.address)]

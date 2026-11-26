@@ -189,6 +189,25 @@ describe('mapEvent', () => {
     expect(e!.details!.amount).toBe('3')
   })
 
+  it('formats threshold set details for first set and update', () => {
+    const first = mapEvent({
+      ...base,
+      topics: ['thr_set', G1],
+      data: { jurisdiction: 'GB', previous: undefined, amount: 50_000_000n, removed: false },
+    })
+    expect(first!.type).toBe('thr_set')
+    expect(first!.details!.amount).toBe('5')
+    expect(first!.details!.previous).toBeUndefined()
+
+    const updated = mapEvent({
+      ...base,
+      topics: ['thr_set', G1],
+      data: { jurisdiction: 'GB', previous: 25_000_000n, amount: 50_000_000n, removed: false },
+    })
+    expect(updated!.details!.previous).toBe('2.5')
+    expect(updated!.details!.amount).toBe('5')
+  })
+
   it('ignores events it does not know', () => {
     expect(mapEvent({ ...base, topics: ['transfer', G1], data: 1n })).toBeNull()
   })

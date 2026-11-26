@@ -1,5 +1,10 @@
+import { Buffer } from 'buffer'
 import { contract, rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
-import { ASSETS, JURISDICTIONS, config, isContractConfigured } from './config'
+import {
+  Client as ComplyRailClient,
+  type VaspStatus as ContractVaspStatus,
+} from '@/packages/complyrail-client/src'
+import { config, isContractConfigured } from './config'
 import { bytesToHex, fromUnits, hexToBytes, parseVaspKey } from './format'
 import { withRetry } from './retry'
 import {
@@ -85,10 +90,15 @@ export function mapPayment(r: RawPayment): PaymentRecord {
   }
 }
 
-const tag = (t: string): Tagged => ({ tag: t, values: undefined })
-
-export function vaspStatusArg(s: VaspStatus): Tagged {
-  return tag(s.charAt(0).toUpperCase() + s.slice(1))
+export function vaspStatusArg(s: VaspStatus): ContractVaspStatus {
+  switch (s) {
+    case VaspStatus.Active:
+      return { tag: 'Active', values: undefined }
+    case VaspStatus.Suspended:
+      return { tag: 'Suspended', values: undefined }
+    case VaspStatus.Revoked:
+      return { tag: 'Revoked', values: undefined }
+  }
 }
 
 /** Contract methods returning Result<T, Error> come back as Ok/Err objects. */
@@ -140,6 +150,13 @@ export function mapEvent(e: {
   if (details.amount && (type === 'pay_sub' || type === 'pay_rel' || type === 'pay_recl' || type === 'thr_set')) {
     details.amount = fromUnits(details.amount)
   }
+  if (type === 'thr_set') {
+    if (details.previous) {
+      details.previous = fromUnits(details.previous)
+    } else {
+      delete details.previous
+    }
+  }
   return {
     id: e.id,
     ledger: e.ledger,
@@ -162,7 +179,7 @@ export type Signer = Pick<contract.ClientOptions, 'signTransaction'> & {
   walletId: string
 }
 
-type AnyClient = contract.Client & Record<string, (args?: any) => Promise<contract.AssembledTransaction<any>>>
+type Unwrapped<T> = T extends { unwrap: () => infer U } ? U : T
 
 /**
  * Cache lifetime: one client per (wallet ID, public key), kept until the
@@ -170,7 +187,7 @@ type AnyClient = contract.Client & Record<string, (args?: any) => Promise<contra
  * when it is created, so a stale entry would sign with an old signer. The
  * wallet provider calls `clearClientCache()` on disconnect.
  */
-const clients = new Map<string, Promise<AnyClient>>()
+const clients = new Map<string, ComplyRailClient>()
 
 /** Drop every cached client so the next call builds one with the current signer. */
 export function clearClientCache(): void {
@@ -183,30 +200,30 @@ function assertConfigured() {
   }
 }
 
-async function getClient(signer?: Signer): Promise<AnyClient> {
+function getClient(signer?: Signer): ComplyRailClient {
   assertConfigured()
   const key = signer ? `${signer.walletId}:${signer.publicKey}` : '__read__'
   if (!clients.has(key)) {
     clients.set(
       key,
-      contract.Client.from({
+      new ComplyRailClient({
         contractId: config.contractId,
         rpcUrl: config.rpcUrl,
         networkPassphrase: config.networkPassphrase,
         publicKey: signer?.publicKey,
         signTransaction: signer?.signTransaction,
-      }).then(c => c as AnyClient),
+      }),
     )
   }
   return clients.get(key)!
 }
 
 /** Reads are idempotent, so transient RPC failures are retried. Writes are never retried. */
-async function read<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+async function read<T>(call: (c: ComplyRailClient) => Promise<contract.AssembledTransaction<T>>): Promise<Unwrapped<T>> {
   return withRetry(async () => {
-    const c = await getClient()
-    const tx = await c[method](args)
-    return unwrap<T>(tx.result)
+    const c = getClient()
+    const tx = await call(c)
+    return unwrap<Unwrapped<T>>(tx.result)
   })
 }
 
@@ -221,18 +238,49 @@ export class TxFailedError extends Error {
   }
 }
 
+/**
+ * Extract the resource fee for a simulated transaction, in stroops, as a
+ * human-readable decimal XLM string.
+ *
+ * Soroban transactions carry two fee components:
+ *   - inclusion fee  – bid to get into the ledger (like a classic transaction fee)
+ *   - resource fee   – cost of CPU, memory and I/O consumed by the contract
+ *
+ * The simulation returns `minResourceFee` (the floor set by the validators).
+ * The assembled transaction's `built.fee` is their sum. We surface the resource
+ * fee separately so users can understand the charge before they sign.
+ *
+ * Returns `null` when the transaction has not yet been simulated.
+ */
+export function resourceFeeXlm(tx: contract.AssembledTransaction<unknown>): string | null {
+  const sim = tx.simulation as (rpc.Api.SimulateTransactionResponse & { minResourceFee?: string }) | undefined
+  const stroops = sim?.minResourceFee ? parseInt(sim.minResourceFee, 10) : null
+  if (stroops === null || isNaN(stroops)) return null
+  // 1 XLM = 10 000 000 stroops (7 decimal places).
+  return (stroops / 10_000_000).toFixed(7).replace(/\.?0+$/, '') || '0'
+}
+
 async function write<T>(signer: Signer, method: string, args: Record<string, unknown>): Promise<T> {
   const c = await getClient(signer)
   const tx = await c[method](args)
   // Surface contract errors from simulation before asking the wallet to sign.
   unwrap(tx.result)
+
+  // Notify the caller of the resource fee so the UI can show it to the user
+  // before the wallet approval dialog opens (issue #1013).
+  const fee = resourceFeeXlm(tx)
+  if (fee !== null && typeof window !== 'undefined') {
+    // Dispatch a custom DOM event that the TxStatus component listens for.
+    window.dispatchEvent(new CustomEvent('complyrail:resourcefee', { detail: { fee } }))
+  }
+
   const sent = await tx.signAndSend()
   // Check the final status before reading the result, so a FAILED transaction
   // is never reported as success.
   if (sent.getTransactionResponse?.status === rpc.Api.GetTransactionStatus.FAILED) {
     throw new TxFailedError(sent.sendTransactionResponse?.hash ?? '')
   }
-  return unwrap<T>(sent.result)
+  return unwrap<Unwrapped<T>>(sent.result)
 }
 
 // ----- reads ---------------------------------------------------------------
@@ -255,16 +303,16 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 }
 
 export async function getAdmin(): Promise<string> {
-  return read<string>('admin')
+  return read(c => c.admin())
 }
 
 /** On-chain check: registered, `Active` and not expired (contract `is_vasp_active`). */
 export async function isVaspActive(address: string): Promise<boolean> {
-  return read<boolean>('is_vasp_active', { address })
+  return read(c => c.is_vasp_active({ address }))
 }
 
 export async function getThresholdAdmin(): Promise<string> {
-  return read<string>('threshold_admin')
+  throw new Error('threshold_admin view is not exported by the contract')
 }
 
 /** Page size for `list_vasps`; the contract caps a single page at 100. */
@@ -272,22 +320,22 @@ const VASP_PAGE_SIZE = 100
 
 /** Address proposed by `propose_admin` and not yet accepted, if any. */
 export async function getPendingAdmin(): Promise<string | null> {
-  return (await read<string | null | undefined>('pending_admin')) ?? null
+  return (await read(c => c.pending_admin())) ?? null
 }
 
 export async function listVasps(): Promise<VaspEntry[]> {
-  const count = await read<number>('vasp_count')
+  const count = await read(c => c.vasp_count())
   const addresses: string[] = []
   for (let start = 0; start < count; start += VASP_PAGE_SIZE) {
-    addresses.push(...await read<string[]>('list_vasps', { start, limit: VASP_PAGE_SIZE }))
+    addresses.push(...await read(c => c.list_vasps({ start, limit: VASP_PAGE_SIZE })))
   }
-  const raws = await mapLimit(addresses, RPC_CONCURRENCY, address => read<RawVasp>('get_vasp', { address }))
+  const raws = await mapLimit(addresses, RPC_CONCURRENCY, address => read(c => c.get_vasp({ address })))
   return raws.map(mapVasp)
 }
 
 export async function getVasp(address: string): Promise<VaspEntry | null> {
   try {
-    return mapVasp(await read<RawVasp>('get_vasp', { address }))
+    return mapVasp(await read(c => c.get_vasp({ address })))
   } catch {
     return null
   }
@@ -295,9 +343,9 @@ export async function getVasp(address: string): Promise<VaspEntry | null> {
 
 /** Newest first, capped at `limit`. */
 export async function listPayments(limit = 100): Promise<PaymentRecord[]> {
-  const count = Number(await read<bigint>('payment_count'))
+  const count = Number(await read(c => c.payment_count()))
   const ids = Array.from({ length: Math.min(count, limit) }, (_, i) => BigInt(count - 1 - i))
-  const raws = await mapLimit(ids, RPC_CONCURRENCY, payment_id => read<RawPayment>('get_payment', { payment_id }))
+  const raws = await mapLimit(ids, RPC_CONCURRENCY, payment_id => read(c => c.get_payment({ payment_id })))
   return raws.map(mapPayment)
 }
 
@@ -327,30 +375,38 @@ export interface PaymentPage {
  * reads (`payment_count`, `list_payments`); later pages cost one.
  */
 export async function listPaymentsPage(cursor?: number): Promise<PaymentPage> {
-  const total = cursor === undefined ? Number(await read<bigint>('payment_count')) : undefined
+  const total = cursor === undefined ? Number(await read(c => c.payment_count())) : undefined
   const end = cursor ?? total ?? 0
   const { start, limit } = pageBounds(end)
   if (limit === 0) return { payments: [], nextCursor: 0, total }
-  const raws = await read<RawPayment[]>('list_payments', { start: BigInt(start), limit })
+  const raws = await read(c => c.list_payments({ start: BigInt(start), limit }))
   return { payments: raws.map(mapPayment).reverse(), nextCursor: start, total }
 }
 
 /** Payments involving one VASP, in submission order (oldest first). */
 export async function listPaymentsByVasp(vasp: string, start = 0, limit = PAYMENT_PAGE_SIZE): Promise<PaymentRecord[]> {
-  const raws = await read<RawPayment[]>('list_payments_by_vasp', { vasp, start: BigInt(start), limit })
+  const raws = await read(c => c.list_payments_by_vasp({ vasp, start: BigInt(start), limit }))
   return raws.map(mapPayment)
 }
 
+/**
+ * Returns the payment, or `null` when the contract reports it does not exist.
+ * Transport and other failures are thrown so callers can distinguish a load
+ * error from a confirmed missing payment.
+ */
 export async function getPayment(id: string): Promise<PaymentRecord | null> {
   try {
     return mapPayment(await read<RawPayment>('get_payment', { payment_id: BigInt(id) }))
-  } catch {
-    return null
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    // Contract error 7 = "Payment not found" (contracts/complyrail/src/lib.rs).
+    if (/Error\(Contract, #7\)/.test(msg)) return null
+    throw e
   }
 }
 
 /** Decoded `(asset, jurisdiction, amount)` tuples from `list_thresholds`. */
-export type RawThreshold = [string, string, bigint | number | string]
+export type RawThreshold = readonly [string, string, bigint | number | string]
 
 export function mapThresholds(rows: RawThreshold[]): ThresholdRow[] {
   return rows
@@ -424,7 +480,7 @@ export async function fetchAllContractEvents(
 
 /** Every configured (non-zero) threshold, in a single contract read. */
 export async function listThresholds(): Promise<ThresholdRow[]> {
-  return mapThresholds(await read<RawThreshold[]>('list_thresholds'))
+  return mapThresholds(await read(c => c.list_thresholds()))
 }
 
 /** Contract events from the RPC's retention window (about 7 days on testnet). */
@@ -485,7 +541,7 @@ export async function getAssetBalance(asset: string, owner: string): Promise<big
     contractId: asset,
     rpcUrl: config.rpcUrl,
     networkPassphrase: config.networkPassphrase,
-  })) as AnyClient
+  })) as contract.Client & { balance: (args: { id: string }) => Promise<contract.AssembledTransaction<bigint>> }
   const tx = await sac.balance({ id: owner })
   return BigInt(unwrap<bigint | number | string>(tx.result))
 }
@@ -496,45 +552,49 @@ export function registerVasp(
   signer: Signer,
   v: { address: string; name: string; jurisdiction: string; publicKeyHex: string; expiresAt?: number },
 ) {
-  return write<void>(signer, 'register_vasp', {
-    address: v.address,
-    name: v.name,
-    jurisdiction: v.jurisdiction,
-    public_key: parseVaspKey(v.publicKeyHex),
-    expires_at: v.expiresAt === undefined ? undefined : BigInt(v.expiresAt),
-  })
+  return write(signer, c =>
+    c.register_vasp({
+      address: v.address,
+      name: v.name,
+      jurisdiction: v.jurisdiction,
+      public_key: Buffer.from(parseVaspKey(v.publicKeyHex)),
+      expires_at: v.expiresAt === undefined ? undefined : BigInt(v.expiresAt),
+    }),
+  )
 }
 
 export function setVaspStatus(signer: Signer, address: string, status: VaspStatus, reason: string) {
-  return write<void>(signer, 'set_vasp_status', { address, status: vaspStatusArg(status), reason })
+  return write(signer, c => c.set_vasp_status({ address, status: vaspStatusArg(status), reason }))
 }
 
 export function setVaspExpiry(signer: Signer, address: string, expiresAt?: number) {
-  return write<void>(signer, 'set_vasp_expiry', {
-    address,
-    expires_at: expiresAt === undefined ? undefined : BigInt(expiresAt),
-  })
+  return write(signer, c =>
+    c.set_vasp_expiry({
+      address,
+      expires_at: expiresAt === undefined ? undefined : BigInt(expiresAt),
+    }),
+  )
 }
 
 // ----- admin handover (two steps) -------------------------------------------
 
 /** Step 1, signed by the current admin. */
 export function proposeAdmin(signer: Signer, newAdmin: string) {
-  return write<void>(signer, 'propose_admin', { new_admin: newAdmin })
+  return write(signer, c => c.propose_admin({ new_admin: newAdmin }))
 }
 
 /** Step 2, signed by the proposed admin. */
 export function acceptAdmin(signer: Signer) {
-  return write<void>(signer, 'accept_admin', { caller: signer.publicKey })
+  return write(signer, c => c.accept_admin({ caller: signer.publicKey }))
 }
 
 /** Signed by the current admin to withdraw a pending proposal. */
 export function cancelAdminProposal(signer: Signer) {
-  return write<void>(signer, 'cancel_admin_proposal', {})
+  return write(signer, c => c.cancel_admin_proposal())
 }
 
 export function setThreshold(signer: Signer, asset: string, jurisdiction: string, amount: bigint) {
-  return write<void>(signer, 'set_threshold', { asset, jurisdiction, amount })
+  return write(signer, c => c.set_threshold({ asset, jurisdiction, amount }))
 }
 
 /** Optional 32-byte external reference as hex, or undefined when blank. Throws on malformed hex. */
@@ -550,40 +610,47 @@ export async function submitPayment(
   signer: Signer,
   p: { toVasp: string; beneficiary: string; asset: string; amount: bigint; externalRef?: string },
 ): Promise<string> {
-  const id = await write<bigint>(signer, 'submit_payment', {
-    from_vasp: signer.publicKey,
-    to_vasp: p.toVasp,
-    beneficiary: p.beneficiary,
-    asset: p.asset,
-    amount: p.amount,
-    external_ref: externalRefArg(p.externalRef),
-  })
+  const ref = externalRefArg(p.externalRef)
+  const id = await write(signer, c =>
+    c.submit_payment({
+      from_vasp: signer.publicKey,
+      to_vasp: p.toVasp,
+      beneficiary: p.beneficiary,
+      asset: p.asset,
+      amount: p.amount,
+      external_ref: ref ? Buffer.from(ref) : undefined,
+    }),
+  )
   return id.toString()
 }
 
 export function submitAttestation(signer: Signer, paymentId: string, hashHex: string, ivmsVersion: string) {
-  return write<void>(signer, 'submit_attestation', {
-    payment_id: BigInt(paymentId),
-    attestation_hash: hexToBytes(hashHex),
-    ivms_version: ivmsVersion,
-  })
+  return write(signer, c =>
+    c.submit_attestation({
+      payment_id: BigInt(paymentId),
+      attestation_hash: Buffer.from(hexToBytes(hashHex)),
+      ivms_version: ivmsVersion,
+    }),
+  )
 }
 
 export function releasePayment(signer: Signer, paymentId: string) {
-  return write<void>(signer, 'release_payment', { payment_id: BigInt(paymentId), caller: signer.publicKey })
+  return write(signer, c => c.release_payment({ payment_id: BigInt(paymentId), caller: signer.publicKey }))
 }
 
 export function rejectPayment(signer: Signer, paymentId: string, reason: string, evidenceHashHex?: string) {
-  return write<void>(signer, 'reject_payment', {
-    payment_id: BigInt(paymentId),
-    caller: signer.publicKey,
-    reason,
-    evidence_hash: evidenceHashHex ? hexToBytes(evidenceHashHex) : undefined,
-  })
+  return write(signer, c =>
+    c.reject_payment({
+      payment_id: BigInt(paymentId),
+      caller: signer.publicKey,
+      reason,
+      evidence_hash: evidenceHashHex ? Buffer.from(hexToBytes(evidenceHashHex)) : undefined,
+    }),
+  )
 }
 
 export function reclaimExpired(signer: Signer, paymentId: string) {
-  return write<void>(signer, 'reclaim_expired', { payment_id: BigInt(paymentId) })
+  return write(signer, c => c.reclaim_expired({ payment_id: BigInt(paymentId) }))
 }
 
 /**

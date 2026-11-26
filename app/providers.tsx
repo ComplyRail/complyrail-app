@@ -3,7 +3,7 @@
 import { WalletProvider } from '@/components/WalletProvider'
 import { RoleProvider } from '@/components/RoleProvider'
 import { Header } from '@/components/Header'
-import { NotDeployedBanner } from '@/components/Notice'
+import { ConfigNoticeBanner, NotDeployedBanner } from '@/components/Notice'
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -11,6 +11,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <RoleProvider>
         <Header />
         <NotDeployedBanner />
+        <ConfigNoticeBanner />
         {children}
       </RoleProvider>
     </WalletProvider>
