@@ -32,6 +32,14 @@ const vasps = [
   { address: 'GEXPIRED', name: 'Expired VASP', jurisdiction: 'US', status: 'active', expiresAt: NOW - 1 },
 ]
 
+// The originator's VASP and its threshold drive the attestation preview.
+const hookState = vi.hoisted(() => ({
+  vasp: { vasp: { address: 'GWALLET', name: 'My VASP', jurisdiction: 'US' } } as {
+    vasp: { address: string; name: string; jurisdiction: string } | null
+  },
+  threshold: { threshold: 1_000_000_000n as bigint | null, loading: false },
+}))
+
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/components/WalletProvider', () => ({
   useWallet: () => ({ address: 'GWALLET', signer: { publicKey: 'GWALLET' }, connect: vi.fn() }),
@@ -52,6 +60,8 @@ describe('Submit Payment balance check', () => {
     getAssetBalance.mockReset()
     submitPayment.mockReset()
     getAssetBalance.mockResolvedValue(25_000_000n) // 2.5 units of the asset
+    hookState.vasp = { vasp: { address: 'GWALLET', name: 'My VASP', jurisdiction: 'US' } }
+    hookState.threshold = { threshold: 1_000_000_000n, loading: false } // 100 units
   })
 
   it('shows the balance of the selected asset', async () => {
@@ -102,5 +112,82 @@ describe('Submit Payment balance check', () => {
     expect(expiredOption.textContent).toContain('expired')
     expect(expiredOption.parentElement?.label).toContain('expired')
     expect((toVaspSelect.querySelector('option[value="GOTHER"]') as HTMLOptionElement).disabled).toBe(false)
+  })
+})
+
+describe('Submit Payment attestation preview', () => {
+  const typeAmount = (value: string) =>
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { name: 'amount', value } })
+
+  /** Renders and waits for the balance fetch, so its state update lands inside act(). */
+  const renderPage = async () => {
+    render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('Available:'))
+  }
+
+  beforeEach(() => {
+    getAssetBalance.mockReset()
+    getAssetBalance.mockResolvedValue(1_000_000_000_000n)
+    hookState.vasp = { vasp: { address: 'GWALLET', name: 'My VASP', jurisdiction: 'US' } }
+    hookState.threshold = { threshold: 1_000_000_000n, loading: false } // 100 units of XLM
+  })
+
+  it('says the payment settles immediately below the threshold', async () => {
+    await renderPage()
+    typeAmount('2.5')
+
+    const preview = screen.getByTestId('attestation-preview')
+    expect(preview.textContent).toMatch(/settles immediately/i)
+    expect(preview.textContent).toContain('100 XLM for US')
+  })
+
+  it('warns that an attestation is required at exactly the threshold', async () => {
+    await renderPage()
+    typeAmount('100')
+
+    const preview = screen.getByTestId('attestation-preview')
+    expect(preview.textContent).toMatch(/attestation required/i)
+    expect(preview.textContent).toContain('100 XLM for US')
+    expect(preview.textContent).toContain('held in escrow')
+  })
+
+  it('warns that an attestation is required above the threshold', async () => {
+    await renderPage()
+    typeAmount('250.5')
+
+    expect(screen.getByTestId('attestation-preview').textContent).toMatch(/attestation required/i)
+  })
+
+  it('fails closed when no threshold rule exists (0 by default)', async () => {
+    hookState.threshold = { threshold: 0n, loading: false }
+    await renderPage()
+    typeAmount('0.01')
+
+    expect(screen.getByTestId('attestation-preview').textContent).toMatch(/attestation required/i)
+  })
+
+  it('does not claim either state while the threshold is still loading', async () => {
+    hookState.threshold = { threshold: null, loading: true }
+    await renderPage()
+    typeAmount('2.5')
+
+    const preview = screen.getByTestId('attestation-preview')
+    expect(preview.textContent).toMatch(/checking the travel rule threshold/i)
+    expect(preview.textContent).not.toMatch(/attestation required|settles immediately/i)
+  })
+
+  it('shows nothing before an amount is entered', async () => {
+    await renderPage()
+
+    expect(screen.queryByTestId('attestation-preview')).toBeNull()
+  })
+
+  it('shows nothing when the connected wallet is not a registered VASP', async () => {
+    // A jurisdiction is what selects the threshold; without one there is no rule to preview.
+    hookState.vasp = { vasp: null }
+    await renderPage()
+    typeAmount('2.5')
+
+    expect(screen.queryByTestId('attestation-preview')).toBeNull()
   })
 })

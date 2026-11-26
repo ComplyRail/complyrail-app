@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
+import { invalidatePaymentQueries, useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { IvmsDecryptPanel } from './IvmsDecryptPanel'
 import { ClockWarning } from '@/components/ClockWarning'
@@ -27,8 +27,20 @@ import { expiryState } from '@/lib/vasp-expiry'
 import { FIELD_LIMITS } from '@/lib/limits'
 import { verifyIvmsPayload, type PayloadCheck } from '@/lib/ivms'
 
+/**
+ * Common rejection reasons. Operators pick one of these instead of free-typing
+ * a different wording every time; the input stays editable for anything else.
+ */
+export const REJECT_REASON_PRESETS = [
+  'Missing or invalid Travel Rule data',
+  'IVMS101 payload does not match the attested hash',
+  'Beneficiary details incomplete',
+  'Suspected sanctions match',
+  'Cancelled at the request of the originating VASP',
+] as const
+
 export function PaymentDetail({ id }: { id: string }) {
-  const { payment, loading, error, reload } = usePayment(id)
+  const { payment, loading, error } = usePayment(id)
   const clock = useLedgerClock()
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
@@ -68,6 +80,9 @@ export function PaymentDetail({ id }: { id: string }) {
   const attestationPending = payment.requiresAttestation && !payment.attestationHash
   const verifyPayload = payment.requiresAttestation && !!payment.attestationHash
   const expired = clock.now >= payment.expiresAt
+  // The contract caps the reason in UTF-8 bytes, so counting characters would
+  // let multi-byte text through and the write would fail on-chain.
+  const reasonError = lengthError('Reason', reason, FIELD_LIMITS.reason)
 
   const checkReceived = async (json: string) => {
     setReceived(json)
@@ -104,7 +119,9 @@ export function PaymentDetail({ id }: { id: string }) {
       await fn(s)
       return true
     })
-    if (ok) reload()
+    // Every write changes the payment and the queue it belongs to, so refresh
+    // both by key: this detail view, the payments list and its stat cards.
+    if (ok) invalidatePaymentQueries(payment.id)
   }
 
   const handleAttest = async (e: React.FormEvent) => {
