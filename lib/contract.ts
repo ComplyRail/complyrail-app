@@ -221,11 +221,42 @@ export class TxFailedError extends Error {
   }
 }
 
+/**
+ * Extract the resource fee for a simulated transaction, in stroops, as a
+ * human-readable decimal XLM string.
+ *
+ * Soroban transactions carry two fee components:
+ *   - inclusion fee  – bid to get into the ledger (like a classic transaction fee)
+ *   - resource fee   – cost of CPU, memory and I/O consumed by the contract
+ *
+ * The simulation returns `minResourceFee` (the floor set by the validators).
+ * The assembled transaction's `built.fee` is their sum. We surface the resource
+ * fee separately so users can understand the charge before they sign.
+ *
+ * Returns `null` when the transaction has not yet been simulated.
+ */
+export function resourceFeeXlm(tx: contract.AssembledTransaction<unknown>): string | null {
+  const sim = tx.simulation as (rpc.Api.SimulateTransactionResponse & { minResourceFee?: string }) | undefined
+  const stroops = sim?.minResourceFee ? parseInt(sim.minResourceFee, 10) : null
+  if (stroops === null || isNaN(stroops)) return null
+  // 1 XLM = 10 000 000 stroops (7 decimal places).
+  return (stroops / 10_000_000).toFixed(7).replace(/\.?0+$/, '') || '0'
+}
+
 async function write<T>(signer: Signer, method: string, args: Record<string, unknown>): Promise<T> {
   const c = await getClient(signer)
   const tx = await c[method](args)
   // Surface contract errors from simulation before asking the wallet to sign.
   unwrap(tx.result)
+
+  // Notify the caller of the resource fee so the UI can show it to the user
+  // before the wallet approval dialog opens (issue #1013).
+  const fee = resourceFeeXlm(tx)
+  if (fee !== null && typeof window !== 'undefined') {
+    // Dispatch a custom DOM event that the TxStatus component listens for.
+    window.dispatchEvent(new CustomEvent('complyrail:resourcefee', { detail: { fee } }))
+  }
+
   const sent = await tx.signAndSend()
   // Check the final status before reading the result, so a FAILED transaction
   // is never reported as success.
