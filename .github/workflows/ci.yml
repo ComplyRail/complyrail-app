@@ -65,7 +65,7 @@ jobs:
       - name: Install system dependencies (cached browsers)
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
-      # Builds the static export, serves out/ and runs every route and the wallet modal.
+      # Builds and serves the production Next.js app, then runs every route and the wallet modal.
       # Fails if any route throws or a heading is missing.
       - run: npm run test:e2e
       - name: Upload Playwright report

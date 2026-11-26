@@ -184,7 +184,18 @@ export function useThresholds() {
 
 export function useAuditEvents() {
   const q = useContractQuery<api.AuditEventsResult>(
-    api.listAuditEvents,
+    async () => {
+      const response = await fetch('/api/audit', { cache: 'no-store' })
+      const result = await response.json()
+      if (!response.ok) {
+        throw new Error(
+          result && typeof result === 'object' && 'error' in result
+            ? String(result.error)
+            : `Audit index request failed (${response.status})`,
+        )
+      }
+      return result as api.AuditEventsResult
+    },
     { events: [], truncated: false, window: { startLedger: 0, latestLedger: 0, since: 0, fallback: false } },
     'events',
   )
