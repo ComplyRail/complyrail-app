@@ -45,6 +45,12 @@ export function PaymentDetail({ id }: { id: string }) {
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
   const { admin } = useAdmin()
+  const {
+    events: auditEvents,
+    truncated: auditEventsTruncated,
+    loading: auditEventsLoading,
+    error: auditEventsError,
+  } = useAuditEvents()
   const { address } = useWallet()
   const tx = useTx()
   const [names, setNames] = useState({ originator: '', originatorAccount: '', beneficiary: '' })
@@ -199,7 +205,7 @@ export function PaymentDetail({ id }: { id: string }) {
         </Card>
       </div>
 
-      {payment.attestationHash && (
+      {(payment.attestationHash || attestationTimeline.length > 0) && (
         <Card title="Attestation">
           <Row label="IVMS101 payload hash (sha256)">
             <CopyableValue value={payment.attestationHash} label="Copy attestation hash" />

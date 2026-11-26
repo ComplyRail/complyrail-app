@@ -203,6 +203,26 @@ describe('mapEvent', () => {
     expect(e!.details!.old_admin).toBe(G1)
   })
 
+  it('maps an attestation amendment with its previous and replacement hashes', () => {
+    const e = mapEvent({
+      ...base,
+      topics: ['att_amd', 3n],
+      data: {
+        old_hash: new Uint8Array(32).fill(1),
+        new_hash: new Uint8Array(32).fill(2),
+        ivms_version: 'IVMS101.2023',
+      },
+    })
+    expect(e!.type).toBe('att_amd')
+    expect(e!.description).toBe('Attestation amended')
+    expect(e!.subject).toBe('3')
+    expect(e!.details).toEqual({
+      old_hash: '01'.repeat(32),
+      new_hash: '02'.repeat(32),
+      ivms_version: 'IVMS101.2023',
+    })
+  })
+
   it('labels a reclaim as reclaimed, not rejected', () => {
     const e = mapEvent({
       ...base,

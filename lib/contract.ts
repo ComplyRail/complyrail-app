@@ -118,6 +118,7 @@ const EVENT_LABELS: Record<AuditEventType, string> = {
   adm_acc: 'Admin accepted',
   pay_sub: 'Payment submitted',
   att_sub: 'Attestation submitted',
+  att_amd: 'Attestation amended',
   pay_rel: 'Payment released',
   pay_rej: 'Payment rejected',
   pay_recl: 'Payment reclaimed',
