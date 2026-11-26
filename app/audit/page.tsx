@@ -1,8 +1,8 @@
-'use client'
+﻿'use client'
 
-import { useState } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useAuditEvents } from '@/lib/hooks'
-import { formatAddress } from '@/lib/format'
+import { formatAddress, isStellarAddressOrHash } from '@/lib/format'
 import { ExplorerLink } from '@/components/Notice'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
 
@@ -20,23 +20,71 @@ const EVENT_TYPES = [
   { value: 'pay_recl', label: 'Payment Reclaimed' },
 ]
 
+function dayStartMs(yyyyMmDd: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(yyyyMmDd)) return null
+  const [y, m, d] = yyyyMmDd.split('-').map(Number)
+  const t = new Date(y, m - 1, d, 0, 0, 0, 0).getTime()
+  return Number.isFinite(t) ? t : null
+}
+
+function dayEndMs(yyyyMmDd: string): number | null {
+  const start = dayStartMs(yyyyMmDd)
+  return start === null ? null : start + 24 * 60 * 60 * 1000 - 1
+}
+
 export default function AuditLogPage() {
   const { events, truncated, window: auditWindow, loading, error, reload } = useAuditEvents()
-  const [selectedTypes, setSelectedTypes] = useState<string[]>([])
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
 
-  const filteredEvents = selectedTypes.length > 0
-    ? events.filter(e => selectedTypes.includes(e.type))
-    : events
+  const selectedTypes = searchParams.getAll('type')
+  const query = searchParams.get('q') || ''
+  const from = searchParams.get('from') || ''
+  const to = searchParams.get('to') || ''
 
-  const handleTypeChange = (type: string) => {
-    setSelectedTypes(prev =>
-      prev.includes(type)
-        ? prev.filter(t => t !== type)
-        : [...prev, type]
-    )
+  const updateParams = (mutate: (params: URLSearchParams) => void) => {
+    const params = new URLSearchParams(searchParams.toString())
+    mutate(params)
+    const qs = params.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
   }
 
+  const handleTypeChange = (type: string) => {
+    updateParams(params => {
+      const types = new Set(params.getAll('type'))
+      if (types.has(type)) types.delete(type)
+      else types.add(type)
+      params.delete('type')
+      for (const t of EVENT_TYPES.map(e => e.value)) {
+        if (types.has(t)) params.append('type', t)
+      }
+    })
+  }
+
+  const needle = query.trim().toLowerCase()
+  const fromMs = from ? dayStartMs(from) : null
+  const toMs = to ? dayEndMs(to) : null
+
+  const filteredEvents = events.filter(e => {
+    if (selectedTypes.length > 0 && !selectedTypes.includes(e.type)) return false
+    const tsMs = e.timestamp * 1000
+    if (fromMs !== null && tsMs < fromMs) return false
+    if (toMs !== null && tsMs > toMs) return false
+    if (needle) {
+      const hay = `${e.subject} ${e.txHash}`.toLowerCase()
+      if (!hay.includes(needle)) return false
+    }
+    return true
+  })
+
   const exportCSV = () => {
+    const escapeCsvCell = (cell: string): string => {
+      // Neutralise formula injection: cells starting with =, +, -, @ are prefixed with '.
+      const safe = /^[=+\-@]/.test(cell) ? `'${cell}` : cell
+      // Escape embedded double-quotes by doubling them, then wrap in quotes.
+      return `"${safe.replace(/"/g, '""')}"`
+    }
     const csv = [
       ['ID', 'Timestamp', 'Ledger', 'Tx hash', 'Type', 'Subject', 'Description', 'Details'],
       ...filteredEvents.map(e => [
@@ -47,27 +95,26 @@ export default function AuditLogPage() {
         e.type,
         e.subject,
         e.description,
-        JSON.stringify(e.details ?? {}).replace(/"/g, "'"),
+        JSON.stringify(e.details ?? {}),
       ]),
     ]
-    const csvContent = csv.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
-    const blob = new Blob([csvContent], { type: 'text/csv' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `audit-log-${Date.now()}.csv`
-    a.click()
-    window.URL.revokeObjectURL(url)
+    const csvContent = csv.map(row => row.map(cell => escapeCsvCell(cell)).join(',')).join('\n')
+    triggerDownload(new Blob([csvContent], { type: 'text/csv' }), `audit-log-${Date.now()}.csv`)
   }
 
   const exportJSON = () => {
     const json = JSON.stringify(filteredEvents, null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
+    triggerDownload(new Blob([json], { type: 'application/json' }), `audit-log-${Date.now()}.json`)
+  }
+
+  /** Create a temporary object URL, trigger a download, then immediately revoke. */
+  function triggerDownload(blob: Blob, filename: string): void {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `audit-log-${Date.now()}.json`
+    a.download = filename
     a.click()
+    window.URL.revokeObjectURL(url)
   }
 
   if (loading) {
@@ -117,6 +164,39 @@ export default function AuditLogPage() {
 
         <div className="mb-8 bg-card border border-border rounded-lg p-6">
           <h2 className="text-lg font-semibold mb-4">Filters</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-muted-foreground">From date</span>
+              <input
+                type="date"
+                value={from}
+                onChange={e => updateParams(p => { if (e.target.value) p.set('from', e.target.value); else p.delete('from') })}
+                className="px-3 py-2 border border-border rounded bg-background"
+                aria-label="From date"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-muted-foreground">To date</span>
+              <input
+                type="date"
+                value={to}
+                onChange={e => updateParams(p => { if (e.target.value) p.set('to', e.target.value); else p.delete('to') })}
+                className="px-3 py-2 border border-border rounded bg-background"
+                aria-label="To date"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-muted-foreground">Search subject or tx hash</span>
+              <input
+                type="search"
+                value={query}
+                onChange={e => updateParams(p => { if (e.target.value) p.set('q', e.target.value); else p.delete('q') })}
+                placeholder="Subject or transaction hash"
+                className="px-3 py-2 border border-border rounded bg-background"
+                aria-label="Search subject or transaction hash"
+              />
+            </label>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
             {EVENT_TYPES.map(et => (
               <label key={et.value} className="flex items-center gap-2 cursor-pointer">
@@ -161,7 +241,7 @@ export default function AuditLogPage() {
                 {event.description}
                 {event.details && Object.keys(event.details).length > 0 && (
                   <div className="text-xs text-muted-foreground">
-                    {Object.entries(event.details).map(([k, v]) => `${k}: ${v.length > 20 ? formatAddress(v) : v}`).join(' · ')}
+                    {Object.entries(event.details).map(([k, v]) => `${k}: ${isStellarAddressOrHash(v) ? formatAddress(v) : v}`).join(' · ')}
                   </div>
                 )}
               </>
