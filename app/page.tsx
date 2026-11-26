@@ -33,10 +33,11 @@ export default function Home() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <Link
               href="/vasps"
+              aria-labelledby="home-card-vasps"
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
-              <div className="text-4xl mb-4">🏛️</div>
-              <h3 className="text-xl font-semibold mb-2">VASP Directory</h3>
+              <div aria-hidden="true" className="text-4xl mb-4">🏛️</div>
+              <h3 id="home-card-vasps" className="text-xl font-semibold mb-2">VASP Directory</h3>
               <p className="text-muted-foreground">
                 Register and manage Virtual Asset Service Providers
               </p>
@@ -44,10 +45,11 @@ export default function Home() {
 
             <Link
               href="/thresholds"
+              aria-labelledby="home-card-thresholds"
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
-              <div className="text-4xl mb-4">⚙️</div>
-              <h3 className="text-xl font-semibold mb-2">Thresholds</h3>
+              <div aria-hidden="true" className="text-4xl mb-4">⚙️</div>
+              <h3 id="home-card-thresholds" className="text-xl font-semibold mb-2">Thresholds</h3>
               <p className="text-muted-foreground">
                 Configure payment thresholds by asset and jurisdiction
               </p>
@@ -55,10 +57,11 @@ export default function Home() {
 
             <Link
               href="/payments"
+              aria-labelledby="home-card-payments"
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
-              <div className="text-4xl mb-4">💳</div>
-              <h3 className="text-xl font-semibold mb-2">Payments</h3>
+              <div aria-hidden="true" className="text-4xl mb-4">💳</div>
+              <h3 id="home-card-payments" className="text-xl font-semibold mb-2">Payments</h3>
               <p className="text-muted-foreground">
                 Submit and manage inter-VASP payments with attestation
               </p>
@@ -66,10 +69,11 @@ export default function Home() {
 
             <Link
               href="/payments/new"
+              aria-labelledby="home-card-submit-payment"
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
-              <div className="text-4xl mb-4">📤</div>
-              <h3 className="text-xl font-semibold mb-2">Submit Payment</h3>
+              <div aria-hidden="true" className="text-4xl mb-4">📤</div>
+              <h3 id="home-card-submit-payment" className="text-xl font-semibold mb-2">Submit Payment</h3>
               <p className="text-muted-foreground">
                 Initiate a new compliant payment between VASPs
               </p>
@@ -77,10 +81,11 @@ export default function Home() {
 
             <Link
               href="/audit"
+              aria-labelledby="home-card-audit"
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
-              <div className="text-4xl mb-4">📋</div>
-              <h3 className="text-xl font-semibold mb-2">Audit Log</h3>
+              <div aria-hidden="true" className="text-4xl mb-4">📋</div>
+              <h3 id="home-card-audit" className="text-xl font-semibold mb-2">Audit Log</h3>
               <p className="text-muted-foreground">
                 View and export compliance audit trail and events
               </p>
@@ -88,17 +93,18 @@ export default function Home() {
 
             <Link
               href="/admin"
+              aria-labelledby="home-card-contract"
               className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition"
             >
-              <div className="text-4xl mb-4">👥</div>
-              <h3 className="text-xl font-semibold mb-2">Contract</h3>
+              <div aria-hidden="true" className="text-4xl mb-4">👥</div>
+              <h3 id="home-card-contract" className="text-xl font-semibold mb-2">Contract</h3>
               <p className="text-muted-foreground">
                 Deployment details, admin and VASP registration
               </p>
             </Link>
 
             <div className="bg-card border border-border rounded-lg p-8">
-              <div className="text-4xl mb-4">🔐</div>
+              <div aria-hidden="true" className="text-4xl mb-4">🔐</div>
               <h3 className="text-xl font-semibold mb-2">Security</h3>
               <p className="text-muted-foreground">
                 {connectedAddress ? (

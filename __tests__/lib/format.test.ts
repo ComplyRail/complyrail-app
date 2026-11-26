@@ -7,10 +7,11 @@ import {
   formatHash,
   fromUnits,
   hexToBytes,
+  isStellarAddressOrHash,
   MAX_I128,
   parseVaspKey,
   toUnits,
-  truncateIdentifier,
+  truncateMiddle,
   vaspKeyError,
 } from '@/lib/format'
 
@@ -79,6 +80,33 @@ describe('display helpers', () => {
   })
 })
 
+describe('isStellarAddressOrHash', () => {
+  const G = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7'
+  const C = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'
+  const HASH = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+
+  it('recognises a Stellar public key (G...)', () => {
+    expect(isStellarAddressOrHash(G)).toBe(true)
+  })
+
+  it('recognises a Stellar contract ID (C...)', () => {
+    expect(isStellarAddressOrHash(C)).toBe(true)
+  })
+
+  it('recognises a 64-hex transaction hash', () => {
+    expect(isStellarAddressOrHash(HASH)).toBe(true)
+  })
+
+  it('does not shorten a plain reason string', () => {
+    expect(isStellarAddressOrHash('beneficiary name mismatch on account')).toBe(false)
+  })
+
+  it('does not shorten a short or empty string', () => {
+    expect(isStellarAddressOrHash('')).toBe(false)
+    expect(isStellarAddressOrHash('short')).toBe(false)
+  })
+})
+
 describe('VASP key validation', () => {
   it('accepts exactly 64 hex characters', () => {
     expect(vaspKeyError('ab'.repeat(32))).toBeNull()
@@ -114,6 +142,17 @@ describe('toUnits i128 bound', () => {
 
   it('rejects amounts far above the i128 maximum', () => {
     expect(() => toUnits('1' + '0'.repeat(40))).toThrow(/too large/)
+  })
+})
+
+describe('truncateMiddle', () => {
+  it('keeps both ends of a long key', () => {
+    expect(truncateMiddle('0123456789abcdef'.repeat(4))).toBe('01234567…89abcdef')
+  })
+
+  it('leaves short values and empty strings alone', () => {
+    expect(truncateMiddle('short')).toBe('short')
+    expect(truncateMiddle('')).toBe('')
   })
 })
 

@@ -1,22 +1,26 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useLedgerClock, useRole, useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { CopyableValue } from '@/components/CopyableValue'
 import { useWallet } from '@/components/WalletProvider'
-import { formatAddress, vaspKeyError } from '@/lib/format'
-import { JURISDICTIONS, isRegistrableJurisdiction } from '@/lib/config'
+import { formatAddress, truncateMiddle, vaspKeyError } from '@/lib/format'
+import { JURISDICTIONS, isContractConfigured, isRegistrableJurisdiction } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { registerVasp, setVaspExpiry, setVaspStatus } from '@/lib/contract'
 import { expiryFromDays, expiryState } from '@/lib/vasp-expiry'
 import { FIELD_LIMITS, lengthError } from '@/lib/limits'
 import { VaspStatus, type VaspEntry } from '@/lib/types'
 import { ResponsiveTable, type Column } from '@/components/ResponsiveTable'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 
 const emptyForm = { address: '', name: '', jurisdiction: '', publicKeyHex: '', expiresDays: '' }
+
+type StatusConfirmation = { vasp: VaspEntry; status: VaspStatus.Suspended | VaspStatus.Revoked }
 
 export default function VaspsPage() {
   const { vasps, loading, error, reload } = useVasps()
@@ -26,9 +30,13 @@ export default function VaspsPage() {
   const tx = useTx()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(emptyForm)
+  const [confirming, setConfirming] = useState<StatusConfirmation | null>(null)
   const [statusReason, setStatusReason] = useState('')
   const [renewing, setRenewing] = useState<{ address: string; days: string } | null>(null)
   const isAdmin = role === 'admin'
+  const trimmedReason = statusReason.trim()
+  const reasonError = lengthError('Reason', trimmedReason, FIELD_LIMITS.reason)
+  const canConfirmStatus = !!trimmedReason && !reasonError && !tx.pending
 
   const formError =
     form.address && !isValidStellarAddress(form.address)
@@ -55,14 +63,32 @@ export default function VaspsPage() {
     }
   }
 
-  const changeStatus = async (vaspAddress: string, status: VaspStatus) => {
-    const trimmed = statusReason.trim()
-    if (status !== VaspStatus.Active && !trimmed) return
-    const ok = await tx.run(`Status set to ${status}`, s =>
-      setVaspStatus(s, vaspAddress, status, trimmed).then(() => true),
+  const activateVasp = async (vaspAddress: string) => {
+    const ok = await tx.run('Status set to active', s =>
+      setVaspStatus(s, vaspAddress, VaspStatus.Active, '').then(() => true),
+    )
+    if (ok) reload()
+  }
+
+  const openStatusConfirmation = (vasp: VaspEntry, status: StatusConfirmation['status']) => {
+    setStatusReason('')
+    setConfirming({ vasp, status })
+  }
+
+  const cancelStatusConfirmation = () => {
+    setConfirming(null)
+    setStatusReason('')
+  }
+
+  const confirmStatusChange = async () => {
+    if (!confirming || !canConfirmStatus) return
+    const { vasp, status } = confirming
+    const verb = status === VaspStatus.Revoked ? 'Revoked' : 'Suspended'
+    const ok = await tx.run(`${verb} ${vasp.name}: ${trimmedReason}`, s =>
+      setVaspStatus(s, vasp.address, status, trimmedReason).then(() => true),
     )
     if (ok) {
-      setStatusReason('')
+      cancelStatusConfirmation()
       reload()
     }
   }
@@ -103,13 +129,20 @@ export default function VaspsPage() {
   )
 
   const vaspColumns: Column<VaspEntry>[] = [
-    { header: 'Name', className: 'font-medium', cell: v => v.name },
+    { header: 'Name', className: 'font-medium', cell: v => (
+      <Link href={`/vasps/view?address=${v.address}`} className="text-primary hover:underline">{v.name}</Link>
+    ) },
     { header: 'Address', className: 'font-mono text-sm', cell: v => (
       <CopyableValue value={v.address} variant="address" label="Copy VASP address">
         <ExplorerLink kind="account" id={v.address}>{formatAddress(v.address)}</ExplorerLink>
       </CopyableValue>
     ) },
     { header: 'Jurisdiction', cell: v => v.jurisdiction },
+    { header: 'Encryption key', className: 'font-mono text-xs', cell: v => (
+      v.publicKey
+        ? <span title={v.publicKey}>{truncateMiddle(v.publicKey)}</span>
+        : <span className="text-muted-foreground">—</span>
+    ) },
     { header: 'Status', cell: v => <StatusBadge status={v.status} type="vasp" /> },
     { header: 'Expires', className: 'text-sm', cell: v => {
       const state = expiryState(v.expiresAt, Date.now() / 1000)
@@ -121,15 +154,15 @@ export default function VaspsPage() {
     ...(isAdmin ? [{ header: 'Actions', className: 'text-sm', cell: (v: VaspEntry) => (
       <div className="flex flex-wrap gap-2">
         {v.status !== VaspStatus.Active && (
-          <button disabled={tx.pending} onClick={() => changeStatus(v.address, VaspStatus.Active)}
+          <button disabled={tx.pending} onClick={() => activateVasp(v.address)}
             className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Activate</button>
         )}
         {v.status === VaspStatus.Active && (
-          <button disabled={tx.pending} onClick={() => changeStatus(v.address, VaspStatus.Suspended)}
+          <button disabled={tx.pending} onClick={() => openStatusConfirmation(v, VaspStatus.Suspended)}
             className="px-3 py-1 bg-yellow-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Suspend</button>
         )}
         {v.status !== VaspStatus.Revoked && (
-          <button disabled={tx.pending} onClick={() => changeStatus(v.address, VaspStatus.Revoked)}
+          <button disabled={tx.pending} onClick={() => openStatusConfirmation(v, VaspStatus.Revoked)}
             className="px-3 py-1 bg-red-600 text-white rounded text-xs hover:opacity-90 disabled:opacity-50">Revoke</button>
         )}
         <button disabled={tx.pending}
@@ -161,23 +194,38 @@ export default function VaspsPage() {
           <form onSubmit={handleRegister} className="bg-card border border-border rounded-lg p-6 mb-8 space-y-4">
             <h2 className="text-xl font-semibold">Register VASP</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input required placeholder="Stellar address (G…)" value={form.address}
-                onChange={e => setForm({ ...form, address: e.target.value.trim() })}
-                className="px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
-              <input required placeholder="Legal name" value={form.name}
-                onChange={e => setForm({ ...form, name: e.target.value })} maxLength={FIELD_LIMITS.name}
-                className="px-3 py-2 border border-border rounded bg-background" />
-              <select required value={form.jurisdiction} onChange={e => setForm({ ...form, jurisdiction: e.target.value })}
-                className="px-3 py-2 border border-border rounded bg-background">
-                <option value="">Jurisdiction…</option>
-                {JURISDICTIONS.filter(j => j !== '*').map(j => <option key={j} value={j}>{j}</option>)}
-              </select>
-              <input placeholder="Registration valid for (days, optional)" type="number" min="1" value={form.expiresDays}
-                onChange={e => setForm({ ...form, expiresDays: e.target.value })}
-                className="px-3 py-2 border border-border rounded bg-background" />
-              <input required placeholder="IVMS101 encryption public key (64 hex chars)" value={form.publicKeyHex}
-                onChange={e => setForm({ ...form, publicKeyHex: e.target.value.trim() })}
-                className="md:col-span-2 px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
+              <div className="space-y-1">
+                <label htmlFor="vasp-address" className="block text-sm font-medium">Stellar address (required)</label>
+                <input id="vasp-address" required placeholder="G…" value={form.address}
+                  onChange={e => setForm({ ...form, address: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="vasp-name" className="block text-sm font-medium">Legal name (required)</label>
+                <input id="vasp-name" required placeholder="Legal name" value={form.name}
+                  onChange={e => setForm({ ...form, name: e.target.value })} maxLength={FIELD_LIMITS.name}
+                  className="w-full px-3 py-2 border border-border rounded bg-background" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="vasp-jurisdiction" className="block text-sm font-medium">Jurisdiction (required)</label>
+                <select id="vasp-jurisdiction" required value={form.jurisdiction} onChange={e => setForm({ ...form, jurisdiction: e.target.value })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background">
+                  <option value="">Select a jurisdiction</option>
+                  {JURISDICTIONS.filter(j => j !== '*').map(j => <option key={j} value={j}>{j}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="vasp-expires-days" className="block text-sm font-medium">Registration valid for (days, optional)</label>
+                <input id="vasp-expires-days" type="number" min="1" value={form.expiresDays}
+                  onChange={e => setForm({ ...form, expiresDays: e.target.value })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background" />
+              </div>
+              <div className="space-y-1 md:col-span-2">
+                <label htmlFor="vasp-public-key" className="block text-sm font-medium">IVMS101 encryption public key (64 hex chars, required)</label>
+                <input id="vasp-public-key" required placeholder="64 hex characters" value={form.publicKeyHex}
+                  onChange={e => setForm({ ...form, publicKeyHex: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
+              </div>
             </div>
             {formError && <p className="text-sm text-red-600">{formError}</p>}
             <button type="submit" disabled={tx.pending || !!formError}
@@ -185,18 +233,6 @@ export default function VaspsPage() {
               {tx.pending ? 'Submitting…' : 'Register on-chain'}
             </button>
           </form>
-        )}
-
-        {isAdmin && (
-          <div className="mb-4">
-            <input
-              value={statusReason}
-              maxLength={256}
-              onChange={e => setStatusReason(e.target.value)}
-              placeholder="Reason (required to suspend or revoke)"
-              className="w-full px-3 py-2 border border-border rounded bg-background"
-            />
-          </div>
         )}
 
         <div className="mb-4"><TxStatus {...tx} /></div>
@@ -209,7 +245,11 @@ export default function VaspsPage() {
           <div className="text-center text-red-600 py-12">Error: {error}</div>
         ) : vasps.length === 0 ? (
           <div className="text-center text-muted-foreground py-12">
-            No VASPs registered yet{isAdmin ? ' — use “Register VASP” above.' : '.'}
+            {!isContractConfigured
+              ? 'The ComplyRail contract is not deployed yet, so there are no VASPs to show.'
+              : !address
+                ? 'No VASPs registered yet. Connect your wallet to see whether you can register one.'
+                : <>No VASPs registered yet{isAdmin ? ' — use “Register VASP” above.' : '.'}</>}
           </div>
         ) : (
           <ResponsiveTable
@@ -222,6 +262,41 @@ export default function VaspsPage() {
             columns={vaspColumns}
             expandedRow={vasp => (isAdmin && renewing?.address === vasp.address ? renewForm(vasp.address) : null)}
           />
+        )}
+
+        {confirming && (
+          <ConfirmDialog
+            title={`${confirming.status === VaspStatus.Revoked ? 'Revoke' : 'Suspend'} ${confirming.vasp.name}?`}
+            consequences={confirming.status === VaspStatus.Revoked ? (
+              <>
+                Revoking <strong>{confirming.vasp.name}</strong> ({formatAddress(confirming.vasp.address)}) is permanent: this
+                VASP will no longer be able to send or receive payments and cannot be reactivated. The reason is recorded
+                in the on-chain audit log.
+              </>
+            ) : (
+              <>
+                Suspending <strong>{confirming.vasp.name}</strong> ({formatAddress(confirming.vasp.address)}) will block it
+                from sending or receiving payments until an admin reactivates it. The reason is recorded in the on-chain
+                audit log.
+              </>
+            )}
+            confirmLabel={confirming.status === VaspStatus.Revoked ? 'Confirm revocation' : 'Confirm suspension'}
+            confirmDisabled={!canConfirmStatus}
+            onCancel={cancelStatusConfirmation}
+            onConfirm={confirmStatusChange}
+          >
+            <label className="block space-y-1 text-sm">
+              <span>Reason <span className="text-muted-foreground">(required, recorded on-chain)</span></span>
+              <input
+                value={statusReason}
+                maxLength={FIELD_LIMITS.reason}
+                onChange={e => setStatusReason(e.target.value)}
+                placeholder="Why are you changing this status?"
+                className="w-full rounded border border-border bg-background px-3 py-2"
+              />
+            </label>
+            {reasonError && <p className="text-sm text-red-600" role="alert">{reasonError}</p>}
+          </ConfirmDialog>
         )}
       </div>
     </div>
