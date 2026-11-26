@@ -10,6 +10,28 @@ export function formatHash(hash: string): string {
   return `${hash.slice(0, 6)}...${hash.slice(-6)}`
 }
 
+/** Shorten a long hex value while keeping both ends readable, e.g. for a table cell. */
+export function truncateMiddle(value: string, head = 8, tail = 8): string {
+  if (!value || value.length <= head + tail + 1) return value
+  return `${value.slice(0, head)}…${value.slice(-tail)}`
+}
+
+/**
+ * Returns true when the value looks like a Stellar address (G... 56 chars) or
+ * a transaction / contract hash (64 hex characters). These are the only values
+ * that should be abbreviated in the UI.
+ */
+export function isStellarAddressOrHash(value: string): boolean {
+  if (!value) return false
+  // Stellar public key: starts with G, 56 base32 characters
+  if (/^G[A-Z2-7]{55}$/.test(value)) return true
+  // Stellar contract ID: starts with C, 56 base32 characters
+  if (/^C[A-Z2-7]{55}$/.test(value)) return true
+  // Transaction or ledger hash: 64 hex characters
+  if (/^[0-9a-fA-F]{64}$/.test(value)) return true
+  return false
+}
+
 /**
  * Convert a human amount ("12.5") to the contract's integer units
  * (stroops, 7 decimals). Throws on invalid input instead of rounding.

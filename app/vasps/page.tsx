@@ -1,13 +1,14 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useLedgerClock, useRole, useVasps } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
-import { formatAddress, vaspKeyError } from '@/lib/format'
-import { JURISDICTIONS, isRegistrableJurisdiction } from '@/lib/config'
+import { formatAddress, truncateMiddle, vaspKeyError } from '@/lib/format'
+import { JURISDICTIONS, isContractConfigured, isRegistrableJurisdiction } from '@/lib/config'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { registerVasp, setVaspExpiry, setVaspStatus } from '@/lib/contract'
 import { expiryFromDays, expiryState } from '@/lib/vasp-expiry'
@@ -102,11 +103,18 @@ export default function VaspsPage() {
   )
 
   const vaspColumns: Column<VaspEntry>[] = [
-    { header: 'Name', className: 'font-medium', cell: v => v.name },
+    { header: 'Name', className: 'font-medium', cell: v => (
+      <Link href={`/vasps/view?address=${v.address}`} className="text-primary hover:underline">{v.name}</Link>
+    ) },
     { header: 'Address', className: 'font-mono text-sm', cell: v => (
       <ExplorerLink kind="account" id={v.address}>{formatAddress(v.address)}</ExplorerLink>
     ) },
     { header: 'Jurisdiction', cell: v => v.jurisdiction },
+    { header: 'Encryption key', className: 'font-mono text-xs', cell: v => (
+      v.publicKey
+        ? <span title={v.publicKey}>{truncateMiddle(v.publicKey)}</span>
+        : <span className="text-muted-foreground">—</span>
+    ) },
     { header: 'Status', cell: v => <StatusBadge status={v.status} type="vasp" /> },
     { header: 'Expires', className: 'text-sm', cell: v => {
       const state = expiryState(v.expiresAt, Date.now() / 1000)
@@ -206,7 +214,11 @@ export default function VaspsPage() {
           <div className="text-center text-red-600 py-12">Error: {error}</div>
         ) : vasps.length === 0 ? (
           <div className="text-center text-muted-foreground py-12">
-            No VASPs registered yet{isAdmin ? ' — use “Register VASP” above.' : '.'}
+            {!isContractConfigured
+              ? 'The ComplyRail contract is not deployed yet, so there are no VASPs to show.'
+              : !address
+                ? 'No VASPs registered yet. Connect your wallet to see whether you can register one.'
+                : <>No VASPs registered yet{isAdmin ? ' — use “Register VASP” above.' : '.'}</>}
           </div>
         ) : (
           <ResponsiveTable
