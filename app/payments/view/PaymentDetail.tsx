@@ -64,7 +64,8 @@ export function PaymentDetail({ id }: { id: string }) {
   const pending = payment.status === PaymentStatus.Pending
   const isOriginator = address === payment.fromVasp
   const canResolve = !!address && (address === payment.toVasp || address === admin)
-  const needsAttestation = payment.requiresAttestation && !payment.attestationHash
+  const attestationPending = payment.requiresAttestation && !payment.attestationHash
+  const verifyPayload = payment.requiresAttestation && !!payment.attestationHash
   const expired = clock.now >= payment.expiresAt
 
   const checkReceived = async (json: string) => {
@@ -187,7 +188,7 @@ export function PaymentDetail({ id }: { id: string }) {
 
       <div className="my-4"><TxStatus {...tx} /></div>
 
-      {pending && isOriginator && needsAttestation && (
+      {pending && isOriginator && attestationPending && (
         <form onSubmit={handleAttest} className="bg-card border border-border rounded-lg p-6 mb-6 space-y-4">
           <h2 className="text-lg font-semibold">Submit IVMS101 attestation</h2>
           <p className="text-sm text-muted-foreground">
