@@ -21,7 +21,7 @@ describe('RBAC', () => {
       const vaspPerms = rolePermissions.vasp
       expect(vaspPerms.canRegisterVasp).toBe(false)
       expect(vaspPerms.canSubmitPayment).toBe(true)
-      expect(vaspPerms.canReleasePayment).toBe(false)
+      expect(vaspPerms.canReleasePayment).toBe(true)
     })
 
     it('inactive-vasp role should not be able to submit or attest payments', () => {

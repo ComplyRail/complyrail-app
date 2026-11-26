@@ -1,7 +1,5 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// The app is a static export (`output: 'export'`), so tests run against the
-// built `out/` directory served by scripts/serve-out.mjs.
 const PORT = Number(process.env.E2E_PORT || 3100)
 const baseURL = `http://localhost:${PORT}`
 
@@ -19,7 +17,7 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: `npm run build && node scripts/serve-out.mjs`,
+    command: `npm run build && npm run start -- --hostname 127.0.0.1 --port ${PORT}`,
     url: baseURL,
     env: { PORT: String(PORT) },
     reuseExistingServer: !process.env.CI,

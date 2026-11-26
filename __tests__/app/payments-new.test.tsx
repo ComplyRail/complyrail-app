@@ -25,6 +25,20 @@ const ASSETS = [
 
 const getAssetBalance = vi.fn()
 const submitPayment = vi.fn()
+const NOW = 1_800_000_000
+const DAY = 86_400
+const vasps = [
+  { address: 'GOTHER', name: 'Other VASP', jurisdiction: 'US', status: 'active', expiresAt: NOW + DAY },
+  { address: 'GEXPIRED', name: 'Expired VASP', jurisdiction: 'US', status: 'active', expiresAt: NOW - 1 },
+]
+
+// The originator's VASP and its threshold drive the attestation preview.
+const hookState = vi.hoisted(() => ({
+  vasp: { vasp: { address: 'GWALLET', name: 'My VASP', jurisdiction: 'US' } } as {
+    vasp: { address: string; name: string; jurisdiction: string } | null
+  },
+  threshold: { threshold: 1_000_000_000n as bigint | null, loading: false },
+}))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/components/WalletProvider', () => ({
@@ -32,9 +46,8 @@ vi.mock('@/components/WalletProvider', () => ({
 }))
 vi.mock('@/lib/hooks', () => ({
   useRole: () => ({ role: 'vasp' }),
-  useVasps: () => ({
-    vasps: [{ address: 'GOTHER', name: 'Other VASP', jurisdiction: 'US', status: 'active' }],
-  }),
+  useVasps: () => ({ vasps }),
+  useLedgerClock: () => ({ now: NOW, source: 'ledger', loading: false }),
 }))
 vi.mock('@/lib/wallet', () => ({ isValidStellarAddress: () => true }))
 vi.mock('@/lib/contract', () => ({
@@ -47,6 +60,8 @@ describe('Submit Payment balance check', () => {
     getAssetBalance.mockReset()
     submitPayment.mockReset()
     getAssetBalance.mockResolvedValue(25_000_000n) // 2.5 units of the asset
+    hookState.vasp = { vasp: { address: 'GWALLET', name: 'My VASP', jurisdiction: 'US' } }
+    hookState.threshold = { threshold: 1_000_000_000n, loading: false } // 100 units
   })
 
   it('shows the balance of the selected asset', async () => {
@@ -85,5 +100,165 @@ describe('Submit Payment balance check', () => {
 
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByRole('button', { name: /sign & submit/i })).not.toBeDisabled()
+  })
+
+  it('shows expired VASPs only as disabled options', () => {
+    const { container } = render(<NewPaymentPage />)
+    const toVaspSelect = container.querySelector('select[name="toVasp"]') as HTMLSelectElement
+    const expiredOption = toVaspSelect.querySelector('option[value="GEXPIRED"]') as HTMLOptionElement
+
+    expect(expiredOption).not.toBeNull()
+    expect(expiredOption.disabled).toBe(true)
+    expect(expiredOption.textContent).toContain('expired')
+    expect(expiredOption.parentElement?.label).toContain('expired')
+    expect((toVaspSelect.querySelector('option[value="GOTHER"]') as HTMLOptionElement).disabled).toBe(false)
+  })
+})
+
+describe('Submit Payment attestation preview', () => {
+  const typeAmount = (value: string) =>
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { name: 'amount', value } })
+
+  /** Renders and waits for the balance fetch, so its state update lands inside act(). */
+  const renderPage = async () => {
+    render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('Available:'))
+  }
+
+  beforeEach(() => {
+    getAssetBalance.mockReset()
+    getAssetBalance.mockResolvedValue(1_000_000_000_000n)
+    hookState.vasp = { vasp: { address: 'GWALLET', name: 'My VASP', jurisdiction: 'US' } }
+    hookState.threshold = { threshold: 1_000_000_000n, loading: false } // 100 units of XLM
+  })
+
+  it('says the payment settles immediately below the threshold', async () => {
+    await renderPage()
+    typeAmount('2.5')
+
+    const preview = screen.getByTestId('attestation-preview')
+    expect(preview.textContent).toMatch(/settles immediately/i)
+    expect(preview.textContent).toContain('100 XLM for US')
+  })
+
+  it('warns that an attestation is required at exactly the threshold', async () => {
+    await renderPage()
+    typeAmount('100')
+
+    const preview = screen.getByTestId('attestation-preview')
+    expect(preview.textContent).toMatch(/attestation required/i)
+    expect(preview.textContent).toContain('100 XLM for US')
+    expect(preview.textContent).toContain('held in escrow')
+  })
+
+  it('warns that an attestation is required above the threshold', async () => {
+    await renderPage()
+    typeAmount('250.5')
+
+    expect(screen.getByTestId('attestation-preview').textContent).toMatch(/attestation required/i)
+  })
+
+  it('fails closed when no threshold rule exists (0 by default)', async () => {
+    hookState.threshold = { threshold: 0n, loading: false }
+    await renderPage()
+    typeAmount('0.01')
+
+    expect(screen.getByTestId('attestation-preview').textContent).toMatch(/attestation required/i)
+  })
+
+  it('does not claim either state while the threshold is still loading', async () => {
+    hookState.threshold = { threshold: null, loading: true }
+    await renderPage()
+    typeAmount('2.5')
+
+    const preview = screen.getByTestId('attestation-preview')
+    expect(preview.textContent).toMatch(/checking the travel rule threshold/i)
+    expect(preview.textContent).not.toMatch(/attestation required|settles immediately/i)
+  })
+
+  it('shows nothing before an amount is entered', async () => {
+    await renderPage()
+
+    expect(screen.queryByTestId('attestation-preview')).toBeNull()
+  })
+
+  it('shows nothing when the connected wallet is not a registered VASP', async () => {
+    // A jurisdiction is what selects the threshold; without one there is no rule to preview.
+    hookState.vasp = { vasp: null }
+    await renderPage()
+    typeAmount('2.5')
+
+    expect(screen.queryByTestId('attestation-preview')).toBeNull()
+  })
+})
+
+describe('Payment draft sessionStorage persistence', () => {
+  beforeEach(() => {
+    sessionStorage.clear()
+    getAssetBalance.mockReset()
+    submitPayment.mockReset()
+    getAssetBalance.mockResolvedValue(25_000_000n)
+  })
+
+  it('saves form inputs into sessionStorage keyed by wallet address', async () => {
+    const { container } = render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('Available: 2.5'))
+
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { name: 'amount', value: '1.25' } })
+    fireEvent.change(screen.getByPlaceholderText('G...'), { target: { name: 'beneficiary', value: 'GBENEFICIARY' } })
+
+    const raw = sessionStorage.getItem('complyrail:payment_draft:GWALLET')
+    expect(raw).not.toBeNull()
+    const draft = JSON.parse(raw!)
+    expect(draft.amount).toBe('1.25')
+    expect(draft.beneficiary).toBe('GBENEFICIARY')
+  })
+
+  it('restores draft data from sessionStorage when mounting', async () => {
+    sessionStorage.setItem(
+      'complyrail:payment_draft:GWALLET',
+      JSON.stringify({
+        toVasp: 'GOTHER',
+        beneficiary: 'GBENEFICIARY123',
+        asset: ASSETS[1].contractId,
+        amount: '2.10',
+        externalRef: 'REF-999',
+      })
+    )
+
+    const { container } = render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance')).toBeInTheDocument())
+
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('2.10')
+    expect((screen.getByPlaceholderText('G...') as HTMLInputElement).value).toBe('GBENEFICIARY123')
+    expect((screen.getByPlaceholderText('Optional reference, invoice ID, or memo') as HTMLInputElement).value).toBe('REF-999')
+    const assetSelect = container.querySelector('select[name="asset"]') as HTMLSelectElement
+    expect(assetSelect.value).toBe(ASSETS[1].contractId)
+  })
+
+  it('clears draft from sessionStorage after successful submission', async () => {
+    submitPayment.mockResolvedValueOnce({ status: 'SUCCESS', hash: '0xabc' })
+
+    sessionStorage.setItem(
+      'complyrail:payment_draft:GWALLET',
+      JSON.stringify({
+        toVasp: 'GOTHER',
+        beneficiary: 'GBENEFICIARY123',
+        asset: ASSETS[0].contractId,
+        amount: '1.5',
+        externalRef: 'REF-1',
+      })
+    )
+
+    render(<NewPaymentPage />)
+    await waitFor(() => expect(screen.getByTestId('balance')).toBeInTheDocument())
+
+    const submitBtn = screen.getByRole('button', { name: /sign & submit/i })
+    fireEvent.click(submitBtn)
+
+    await waitFor(() => {
+      expect(submitPayment).toHaveBeenCalled()
+      expect(sessionStorage.getItem('complyrail:payment_draft:GWALLET')).toBeNull()
+    })
   })
 })

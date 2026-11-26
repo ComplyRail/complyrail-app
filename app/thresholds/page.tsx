@@ -6,7 +6,8 @@ import { TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { ASSETS, JURISDICTIONS, assetSymbol } from '@/lib/config'
 import { fromUnits, toUnits } from '@/lib/format'
-import { setThreshold } from '@/lib/contract'
+import { groupThresholds, setThreshold } from '@/lib/contract'
+import type { ThresholdRow } from '@/lib/types'
 
 export default function ThresholdsPage() {
   const { thresholds, loading, error, reload } = useThresholds()
@@ -17,6 +18,7 @@ export default function ThresholdsPage() {
   const [form, setForm] = useState({ asset: '', jurisdiction: '', amount: '' })
   const [amountError, setAmountError] = useState<string | null>(null)
   const isAdmin = isThresholdAdmin
+  const { configured, other } = groupThresholds(thresholds)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -59,6 +61,7 @@ export default function ThresholdsPage() {
         <div className="mb-6 text-sm text-muted-foreground bg-muted/40 border border-border rounded p-4">
           Rules are looked up by the <em>originating</em> VASP&apos;s jurisdiction, then the <code>*</code> fallback.
           With no matching rule the threshold is <strong>0</strong>, so every payment needs an attestation (fail closed).
+          Rules for jurisdictions outside this list are shown under <strong>Other jurisdictions</strong> and are still enforced.
         </div>
 
         {showForm && (
@@ -97,28 +100,50 @@ export default function ThresholdsPage() {
             No thresholds configured — every payment currently requires an attestation.
           </div>
         ) : (
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border bg-muted/50">
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Asset</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Jurisdiction</th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold">Threshold</th>
-                </tr>
-              </thead>
-              <tbody>
-                {thresholds.map(t => (
-                  <tr key={`${t.asset}:${t.jurisdiction}`} className="border-b border-border hover:bg-muted/50">
-                    <td className="px-6 py-4 font-medium">{assetSymbol(t.asset)}</td>
-                    <td className="px-6 py-4">{t.jurisdiction === '*' ? '* (fallback)' : t.jurisdiction}</td>
-                    <td className="px-6 py-4 font-mono">{fromUnits(t.amount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-8">
+            {configured.length > 0 && (
+              <section>
+                <h2 className="text-lg font-semibold mb-3">Configured jurisdictions</h2>
+                <ThresholdTable rows={configured} />
+              </section>
+            )}
+            {other.length > 0 && (
+              <section>
+                <h2 className="text-lg font-semibold mb-1">Other jurisdictions</h2>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Rules stored on-chain for codes outside the configured list. These are still enforced.
+                </p>
+                <ThresholdTable rows={other} />
+              </section>
+            )}
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function ThresholdTable({ rows }: { rows: ThresholdRow[] }) {
+  return (
+    <div className="bg-card border border-border rounded-lg overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-border bg-muted/50">
+            <th className="px-6 py-3 text-left text-sm font-semibold">Asset</th>
+            <th className="px-6 py-3 text-left text-sm font-semibold">Jurisdiction</th>
+            <th className="px-6 py-3 text-left text-sm font-semibold">Threshold</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(t => (
+            <tr key={`${t.asset}:${t.jurisdiction}`} className="border-b border-border hover:bg-muted/50">
+              <td className="px-6 py-4 font-medium">{assetSymbol(t.asset)}</td>
+              <td className="px-6 py-4">{t.jurisdiction === '*' ? '* (fallback)' : t.jurisdiction}</td>
+              <td className="px-6 py-4 font-mono">{fromUnits(t.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

@@ -3,10 +3,10 @@ name: Contracts
 on:
   push:
     branches: [main]
-    paths: ['contracts/**', '.github/workflows/contracts.yml']
+    paths: ['contracts/**', 'packages/complyrail-client/**', '.github/workflows/contracts.yml']
   pull_request:
     branches: [main]
-    paths: ['contracts/**', '.github/workflows/contracts.yml']
+    paths: ['contracts/**', 'packages/complyrail-client/**', '.github/workflows/contracts.yml']
 
 defaults:
   run:
@@ -75,6 +75,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$FIRST" != "$SECOND" ]; then
             echo "::error::Two builds of the same commit produced different WASM"
+            exit 1
+          fi
+      - name: Generate TypeScript bindings
+        run: |
+          stellar contract bindings typescript \
+            --wasm target/wasm32v1-none/release/complyrail.wasm \
+            --output-dir ../../packages/complyrail-client \
+            --overwrite
+      - name: Check TypeScript bindings are up to date
+        run: |
+          if ! git diff --quiet -- ../../packages/complyrail-client || [ -n "$(git ls-files --others --exclude-standard -- ../../packages/complyrail-client)" ]; then
+            echo "::error::packages/complyrail-client is out of date with contracts/complyrail. Regenerate with: stellar contract bindings typescript --wasm contracts/complyrail/target/wasm32v1-none/release/complyrail.wasm --output-dir packages/complyrail-client --overwrite"
+            git status --short -- ../../packages/complyrail-client
+            git diff -- ../../packages/complyrail-client
             exit 1
           fi
       - uses: actions/upload-artifact@v4

@@ -1,6 +1,6 @@
 # Deployment
 
-ComplyRail has two parts that deploy independently: the Soroban contract (Stellar testnet) and the dashboard (GitHub Pages). Both are automated with GitHub Actions; no local tooling is needed.
+ComplyRail has two parts that deploy independently: the Soroban contract (Stellar testnet) and the dashboard with its audit index (Vercel). Both are automated with GitHub Actions; no local tooling is needed.
 
 ## 1. Contract → Stellar testnet
 
@@ -22,18 +22,28 @@ To deploy from your machine instead (needs the [Stellar CLI](https://developers.
 bash contracts/scripts/deploy-testnet.sh G...YOUR_ADMIN_ADDRESS
 ```
 
-## 2. Dashboard → GitHub Pages
+## 2. Dashboard and audit index → Vercel
 
-Every push to `main` runs `.github/workflows/pages.yml`. It builds the Next.js app as a static export and publishes it to **https://complyrail.github.io/complyrail-app/**.
+The app uses a Next.js route handler and cannot be deployed as a static GitHub Pages export. Create a Vercel project for this repository and add these GitHub Actions repository secrets so `.github/workflows/deploy-vercel.yml` can deploy production builds:
 
-The dashboard reads the contract ID from `contracts/deployments/testnet.json`, so a new contract deployment goes live on the site automatically. To use a different contract, set `NEXT_PUBLIC_CONTRACT_ID`.
+- `VERCEL_TOKEN`: a Vercel access token
+- `VERCEL_ORG_ID`: the Vercel team or account ID
+- `VERCEL_PROJECT_ID`: the Vercel project ID
+
+The dashboard reads the contract ID from `contracts/deployments/testnet.json`, so a new contract deployment goes live on the site automatically. To use a different deployment, set `NEXT_PUBLIC_CONTRACT_ID`.
 
 | Variable | Default |
 |---|---|
 | `NEXT_PUBLIC_CONTRACT_ID` | value in `contracts/deployments/testnet.json` |
 | `NEXT_PUBLIC_RPC_URL` | `https://soroban-testnet.stellar.org` |
 | `NEXT_PUBLIC_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` |
-| `NEXT_PUBLIC_BASE_PATH` | empty (set to `/complyrail-app` by the Pages workflow) |
+| `TURSO_DATABASE_URL` | Turso database URL (`libsql://...`) |
+| `TURSO_AUTH_TOKEN` | database authentication token |
+| `CRON_SECRET` | random secret used to authenticate the indexer cron endpoint |
+
+Create a Turso database and token, then add all three server-only variables above to the Vercel project. The `/api/audit/index` endpoint creates its tables automatically. On its first run it backfills the history still available from RPC (up to 115,000 ledgers); events already outside RPC retention cannot be recovered by this indexer. Vercel Cron calls it daily; each run saves the RPC cursor and unique event IDs transactionally, so interrupted runs resume without duplicate events. The audit page reads stored events and uses Stellar RPC only when the index is empty.
+
+To run the indexer manually, send a GET request to `/api/audit/index` with `Authorization: Bearer <CRON_SECRET>`. The endpoint rejects requests without the configured secret.
 
 ## 3. Demo data (optional)
 
@@ -66,6 +76,8 @@ Example:
 An invalid entry stops the build with an error that names the entry. The issuer must match the network the dashboard is built for (the testnet USDC issuer above is for testnet only).
 
 ## Local development
+
+For the audit page, provide `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in `.env.local`. Set `CRON_SECRET` there to call the local indexer endpoint with the same bearer authentication.
 
 ```bash
 npm install --legacy-peer-deps

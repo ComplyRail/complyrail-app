@@ -16,7 +16,7 @@ export const rolePermissions: Record<Role, Permission> = {
   admin: {
     canRegisterVasp: true,
     canUpdateVaspStatus: true,
-    canSetThreshold: true,
+    canSetThreshold: false,
     canSubmitPayment: true,
     canSubmitAttestation: true,
     canReleasePayment: true,
@@ -29,8 +29,8 @@ export const rolePermissions: Record<Role, Permission> = {
     canSetThreshold: false,
     canSubmitPayment: true,
     canSubmitAttestation: true,
-    canReleasePayment: false,
-    canRejectPayment: false,
+    canReleasePayment: true,
+    canRejectPayment: true,
     canExportAuditLog: true,
   },
   'inactive-vasp': {
