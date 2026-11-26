@@ -43,6 +43,7 @@ export default function PaymentsPage() {
   const awaitingAttestation = payments.filter(
     p => p.status === PaymentStatus.Pending && p.requiresAttestation && !p.attestationHash,
   ).length
+  const pending = count(PaymentStatus.Pending) - awaitingAttestation
 
   const needle = addressFilter.trim().toLowerCase()
   const filteredPayments = payments.filter(p => {
@@ -64,14 +65,16 @@ export default function PaymentsPage() {
           </Link>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <Stat label="Total" value={total} />
-          <Stat label="Pending" value={count(PaymentStatus.Pending)} className="text-yellow-600" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+          <Stat label="Total" value={payments.length} />
+          <Stat label="Pending" value={pending} className="text-yellow-600" />
           <Stat label="Awaiting attestation" value={awaitingAttestation} className="text-orange-600" />
           <Stat label="Released" value={count(PaymentStatus.Released)} className="text-green-600" />
+          <Stat label="Rejected" value={count(PaymentStatus.Rejected)} className="text-red-600" />
+          <Stat label="Reclaimed" value={count(PaymentStatus.Reclaimed)} className="text-purple-600" />
         </div>
         <p className="mb-4 text-xs text-muted-foreground">
-          Status counts cover the {payments.length} loaded payment{payments.length === 1 ? '' : 's'}.
+          Counts cover the {payments.length} loaded payment{payments.length === 1 ? '' : 's'}.
         </p>
 
         <div className="mb-4 flex flex-col gap-3 sm:flex-row">
