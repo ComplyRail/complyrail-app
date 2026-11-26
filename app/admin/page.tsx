@@ -17,6 +17,8 @@ export default function ContractPage() {
   const { total: paymentTotal } = usePayments()
   const { address } = useWallet()
   const record = deployment as Record<string, string>
+  // The deployment file can describe a different contract when an env override is in use.
+  const metadataMatchesContract = record.contractId === config.contractId
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -46,13 +48,19 @@ export default function ContractPage() {
               {address && admin === address && <span className="ml-2 text-green-700">(you)</span>}
             </Row>
             <Row label="RPC">{config.rpcUrl}</Row>
-            {record.deployedAt && <Row label="Deployed">{record.deployedAt.replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')}</Row>}
-            {record.wasmHash && <Row label="WASM sha256"><span className="font-mono break-all">{record.wasmHash}</span></Row>}
-            {record.commit && (
-              <Row label="Source commit">
-                <a className="text-primary hover:underline font-mono" target="_blank" rel="noreferrer"
-                  href={`https://github.com/ComplyRail/complyrail-app/commit/${record.commit}`}>{record.commit.slice(0, 7)}</a>
-              </Row>
+            {metadataMatchesContract ? (
+              <>
+                {record.deployedAt && <Row label="Deployed">{record.deployedAt.replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')}</Row>}
+                {record.wasmHash && <Row label="WASM sha256"><span className="font-mono break-all">{record.wasmHash}</span></Row>}
+                {record.commit && (
+                  <Row label="Source commit">
+                    <a className="text-primary hover:underline font-mono" target="_blank" rel="noreferrer"
+                      href={`https://github.com/ComplyRail/complyrail-app/commit/${record.commit}`}>{record.commit.slice(0, 7)}</a>
+                  </Row>
+                )}
+              </>
+            ) : (
+              <Row label="Deployment metadata">metadata unavailable for this contract</Row>
             )}
             <Row label="Registered VASPs">{vasps.length}</Row>
             <Row label="Payments">{paymentTotal}</Row>
