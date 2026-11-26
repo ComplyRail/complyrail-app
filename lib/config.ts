@@ -1,4 +1,4 @@
-import { Asset, Networks, StrKey } from '@stellar/stellar-sdk'
+import { Asset, Networks, StrKey, contract, rpc } from '@stellar/stellar-sdk'
 import deployment from '../contracts/deployments/testnet.json'
 import assetRegistry from '../config/assets.json'
 
@@ -39,6 +39,12 @@ export interface AssetOption {
   symbol: string
   /** Stellar Asset Contract (SAC) address used by the ComplyRail contract. */
   contractId: string
+  /**
+   * Whether the asset contract is reachable on-chain.
+   * `true` after a successful `name()` query, `false` after a failed one,
+   * `null` while the check is in progress or has not been run yet.
+   */
+  available: boolean | null
 }
 
 /** One entry in config/assets.json. Native (XLM) has no issuer. */
@@ -63,12 +69,12 @@ export function buildAssetOptions(entries: AssetEntry[], networkPassphrase: stri
     seen.add(e.symbol)
     if (e.native) {
       if (e.issuer) throw new Error(`${where}: native asset must not have an issuer`)
-      return { symbol: e.symbol, contractId: Asset.native().contractId(networkPassphrase) }
+      return { symbol: e.symbol, contractId: Asset.native().contractId(networkPassphrase), available: null }
     }
     if (!e.issuer || !StrKey.isValidEd25519PublicKey(e.issuer)) {
       throw new Error(`${where}: issuer must be a valid Stellar public key (G...)`)
     }
-    return { symbol: e.symbol, contractId: new Asset(e.symbol, e.issuer).contractId(networkPassphrase) }
+    return { symbol: e.symbol, contractId: new Asset(e.symbol, e.issuer).contractId(networkPassphrase), available: null }
   })
 }
 
@@ -85,4 +91,27 @@ export { JURISDICTIONS } from './jurisdictions'
 export function isRegistrableJurisdiction(jurisdiction: string): boolean {
   const j = jurisdiction.trim()
   return j !== '' && j !== '*'
+}
+
+/**
+ * Probe each asset contract with a read-only `name()` call and mark the asset
+ * `available` or unavailable in the `ASSETS` array. Call once at startup.
+ * Never throws: a failed lookup sets `available = false` on that entry.
+ */
+export async function verifyAssetContracts(rpcUrl: string, networkPassphrase: string): Promise<void> {
+  await Promise.all(
+    ASSETS.map(async asset => {
+      try {
+        const c = (await contract.Client.from({
+          contractId: asset.contractId,
+          rpcUrl,
+          networkPassphrase,
+        })) as contract.Client & Record<string, (args?: unknown) => Promise<{ result: unknown }>>
+        await c.name()
+        asset.available = true
+      } catch {
+        asset.available = false
+      }
+    }),
+  )
 }

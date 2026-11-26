@@ -1,6 +1,7 @@
-'use client'
+﻿'use client'
 
 import Link from 'next/link'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { usePayments } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { useWallet } from '@/components/WalletProvider'
@@ -9,14 +10,46 @@ import { formatAddress, fromUnits } from '@/lib/format'
 import { PaymentStatus } from '@/lib/types'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
 
+const STATUS_OPTIONS: Array<{ value: '' | PaymentStatus; label: string }> = [
+  { value: '', label: 'All statuses' },
+  { value: PaymentStatus.Pending, label: 'Pending' },
+  { value: PaymentStatus.Released, label: 'Released' },
+  { value: PaymentStatus.Rejected, label: 'Rejected' },
+  { value: PaymentStatus.Reclaimed, label: 'Reclaimed' },
+]
+
 export default function PaymentsPage() {
   const { payments, total, hasMore, loadMore, loadingMore, moreError, loading, error } = usePayments()
-  const { address } = useWallet()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+
+  const statusFilter = (searchParams.get('status') as PaymentStatus | null) || ''
+  const addressFilter = searchParams.get('vasp') || ''
+
+  const setFilters = (next: { status?: string; vasp?: string }) => {
+    const params = new URLSearchParams(searchParams.toString())
+    const status = next.status ?? statusFilter
+    const vasp = next.vasp ?? addressFilter
+    if (status) params.set('status', status)
+    else params.delete('status')
+    if (vasp) params.set('vasp', vasp)
+    else params.delete('vasp')
+    const qs = params.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+  }
 
   const count = (s: PaymentStatus) => payments.filter(p => p.status === s).length
   const awaitingAttestation = payments.filter(
     p => p.status === PaymentStatus.Pending && p.requiresAttestation && !p.attestationHash,
   ).length
+
+  const needle = addressFilter.trim().toLowerCase()
+  const filteredPayments = payments.filter(p => {
+    if (statusFilter && p.status !== statusFilter) return false
+    if (!needle) return true
+    return [p.fromVasp, p.toVasp, p.beneficiary].some(addr => addr.toLowerCase().includes(needle))
+  })
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -41,21 +74,43 @@ export default function PaymentsPage() {
           Status counts cover the {payments.length} loaded payment{payments.length === 1 ? '' : 's'}.
         </p>
 
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row">
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-muted-foreground">Status</span>
+            <select
+              value={statusFilter}
+              onChange={e => setFilters({ status: e.target.value })}
+              className="px-3 py-2 border border-border rounded bg-background"
+              aria-label="Filter by status"
+            >
+              {STATUS_OPTIONS.map(opt => (
+                <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm flex-1">
+            <span className="text-muted-foreground">VASP address</span>
+            <input
+              value={addressFilter}
+              onChange={e => setFilters({ vasp: e.target.value })}
+              placeholder="Search by VASP address"
+              className="px-3 py-2 border border-border rounded bg-background font-mono"
+              aria-label="Search by VASP address"
+            />
+          </label>
+        </div>
+
         {loading ? (
           <div className="text-center text-muted-foreground py-12">Loading from contract…</div>
         ) : error ? (
           <div className="text-center text-red-600 py-12">Error: {error}</div>
         ) : payments.length === 0 ? (
-          <div className="text-center text-muted-foreground py-12">
-            {!isContractConfigured
-              ? 'The ComplyRail contract is not deployed yet, so there are no payments to show.'
-              : !address
-                ? 'Connect your wallet to see your payments.'
-                : 'No payments yet'}
-          </div>
+          <div className="text-center text-muted-foreground py-12">No payments yet</div>
+        ) : filteredPayments.length === 0 ? (
+          <div className="text-center text-muted-foreground py-12">No payments match the current filters</div>
         ) : (
           <ResponsiveTable
-            rows={payments}
+            rows={filteredPayments}
             rowKey={p => p.id}
             columns={[
               { header: '#', className: 'font-mono text-sm', cell: p => (

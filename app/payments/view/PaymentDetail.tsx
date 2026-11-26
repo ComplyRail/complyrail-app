@@ -43,7 +43,23 @@ export function PaymentDetail({ id }: { id: string }) {
   const [overrideRelease, setOverrideRelease] = useState(false)
 
   if (loading) return <Shell><div className="text-center text-muted-foreground">Loading from contract…</div></Shell>
-  if (error || !payment) return <Shell><div className="text-center text-red-600">Payment #{id} not found</div></Shell>
+  if (error) {
+    return (
+      <Shell>
+        <div className="text-center py-12 space-y-4">
+          <p className="text-red-600">Failed to load payment: {error}</p>
+          <button
+            type="button"
+            onClick={reload}
+            className="px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90"
+          >
+            Retry
+          </button>
+        </div>
+      </Shell>
+    )
+  }
+  if (!payment) return <Shell><div className="text-center text-red-600 py-12">Payment #{id} not found</div></Shell>
 
   const pending = payment.status === PaymentStatus.Pending
   const isOriginator = address === payment.fromVasp
