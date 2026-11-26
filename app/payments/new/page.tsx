@@ -13,6 +13,57 @@ import { VaspStatus } from '@/lib/types'
 import { expiryState } from '@/lib/vasp-expiry'
 import { externalRefArg } from '@/lib/contract'
 
+interface PaymentDraft {
+  toVasp: string
+  beneficiary: string
+  asset: string
+  amount: string
+  externalRef: string
+}
+
+function getDraftStorageKey(address: string | null | undefined): string {
+  return `complyrail:payment_draft:${address || 'anonymous'}`
+}
+
+export function loadPaymentDraft(address: string | null | undefined): PaymentDraft | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(getDraftStorageKey(address))
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      return {
+        toVasp: typeof parsed.toVasp === 'string' ? parsed.toVasp : '',
+        beneficiary: typeof parsed.beneficiary === 'string' ? parsed.beneficiary : '',
+        asset: typeof parsed.asset === 'string' ? parsed.asset : ASSETS[0].contractId,
+        amount: typeof parsed.amount === 'string' ? parsed.amount : '',
+        externalRef: typeof parsed.externalRef === 'string' ? parsed.externalRef : '',
+      }
+    }
+  } catch {
+    // Ignore JSON parse errors or restricted storage
+  }
+  return null
+}
+
+export function savePaymentDraft(address: string | null | undefined, draft: PaymentDraft): void {
+  if (typeof window === 'undefined') return
+  try {
+    sessionStorage.setItem(getDraftStorageKey(address), JSON.stringify(draft))
+  } catch {
+    // Ignore restricted storage
+  }
+}
+
+export function clearPaymentDraft(address: string | null | undefined): void {
+  if (typeof window === 'undefined') return
+  try {
+    sessionStorage.removeItem(getDraftStorageKey(address))
+  } catch {
+    // Ignore restricted storage
+  }
+}
+
 export default function NewPaymentPage() {
   const router = useRouter()
   const { vasps } = useVasps()
@@ -20,12 +71,17 @@ export default function NewPaymentPage() {
   const { address } = useWallet()
   const { role } = useRole(address)
   const tx = useTx()
-  const [form, setForm] = useState({
-    toVasp: '',
-    beneficiary: '',
-    asset: ASSETS[0].contractId,
-    amount: '',
-    externalRef: '',
+  const [form, setForm] = useState<PaymentDraft>(() => {
+    const saved = loadPaymentDraft(address)
+    return (
+      saved ?? {
+        toVasp: '',
+        beneficiary: '',
+        asset: ASSETS[0].contractId,
+        amount: '',
+        externalRef: '',
+      }
+    )
   })
   const [formError, setFormError] = useState<string | null>(null)
   const [balance, setBalance] = useState<bigint | null>(null)
@@ -34,6 +90,19 @@ export default function NewPaymentPage() {
   // preview has to look it up the same way rather than assuming a flat limit.
   const { vasp: originVasp } = useVasp(address ?? '')
   const { threshold, loading: thresholdLoading } = useThreshold(form.asset, originVasp?.jurisdiction)
+
+  // When connected address changes, restore draft for that wallet if present
+  useEffect(() => {
+    const saved = loadPaymentDraft(address)
+    if (saved) {
+      setForm(saved)
+    }
+  }, [address])
+
+  // Save draft to sessionStorage whenever form fields change
+  useEffect(() => {
+    savePaymentDraft(address, form)
+  }, [address, form])
 
   // Refresh the connected wallet's balance whenever the wallet or asset changes.
   useEffect(() => {
@@ -106,7 +175,10 @@ export default function NewPaymentPage() {
       return setFormError(err instanceof Error ? err.message : 'Invalid external reference')
     }
     const id = await tx.run('Payment submitted', s => submitPayment(s, { ...form, amount }))
-    if (id !== undefined) router.push(`/payments/view?id=${id}`)
+    if (id !== undefined) {
+      clearPaymentDraft(address)
+      router.push(`/payments/view?id=${id}`)
+    }
   }
 
   return (
