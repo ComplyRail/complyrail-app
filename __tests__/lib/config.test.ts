@@ -44,7 +44,7 @@ describe('buildAssetOptions', () => {
 
   it('rejects a bad or duplicate symbol', () => {
     expect(() => buildAssetOptions([{ symbol: 'usdc', issuer: ISSUER }], Networks.TESTNET)).toThrow(/symbol/)
-    expect(() => buildAssetOptions([{ symbol: '' , native: true }], Networks.TESTNET)).toThrow(/symbol/)
+    expect(() => buildAssetOptions([{ symbol: '', native: true }], Networks.TESTNET)).toThrow(/symbol/)
     expect(() => buildAssetOptions(
       [{ symbol: 'USDC', issuer: ISSUER }, { symbol: 'USDC', issuer: ISSUER }],
       Networks.TESTNET,

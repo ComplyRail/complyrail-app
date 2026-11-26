@@ -9,13 +9,154 @@ import assetRegistry from '../config/assets.json'
  * contracts/deployments/testnet.json, which the "Deploy to testnet" GitHub
  * Action writes after each deployment.
  */
+export const deployedContractId = deployment.contractId || ''
+
 export const config = {
-  contractId: process.env.NEXT_PUBLIC_CONTRACT_ID || deployment.contractId || '',
+  contractId: process.env.NEXT_PUBLIC_CONTRACT_ID || deployedContractId,
   rpcUrl: process.env.NEXT_PUBLIC_RPC_URL || 'https://soroban-testnet.stellar.org',
   networkPassphrase: process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE || Networks.TESTNET,
 }
 
-export const isContractConfigured = /^C[A-Z2-7]{55}$/.test(config.contractId)
+const CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/
+
+export const isContractConfigured = CONTRACT_ID_RE.test(config.contractId)
+
+export type ConfigIssueSeverity = 'error' | 'warning'
+
+export type ConfigIssueCode =
+  | 'contract_mismatch'
+  | 'invalid_contract_id'
+  | 'invalid_rpc_url'
+  | 'invalid_network_passphrase'
+  | 'unknown_network_passphrase'
+
+export interface ConfigIssue {
+  field: 'contractId' | 'rpcUrl' | 'networkPassphrase'
+  severity: ConfigIssueSeverity
+  code: ConfigIssueCode
+  message: string
+}
+
+export interface ConfigValidationInput {
+  contractId: string
+  rpcUrl: string
+  networkPassphrase: string
+  /** Contract ID recorded in contracts/deployments/testnet.json (if any). */
+  deployedContractId?: string
+  /** Raw NEXT_PUBLIC_CONTRACT_ID override value (if set). */
+  contractIdOverride?: string
+}
+
+export interface ConfigValidationResult {
+  valid: boolean
+  errors: ConfigIssue[]
+  warnings: ConfigIssue[]
+  /** True when NEXT_PUBLIC_CONTRACT_ID is set and differs from the deployment record. */
+  contractMismatch: boolean
+}
+
+const KNOWN_NETWORK_PASSPHRASES = new Set<string>([
+  Networks.TESTNET,
+  Networks.PUBLIC,
+  Networks.FUTURENET,
+  Networks.STANDALONE,
+])
+
+/** Validate an RPC URL string: must be an http:// or https:// URL with a hostname. */
+export function isValidRpcUrl(url: string): boolean {
+  if (typeof url !== 'string' || url.trim() === '' || url !== url.trim()) return false
+  try {
+    const parsed = new URL(url)
+    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
+/** Validate a Stellar network passphrase format: non-empty single-line string without leading/trailing whitespace. */
+export function isValidNetworkPassphrase(passphrase: string): boolean {
+  if (typeof passphrase !== 'string') return false
+  if (passphrase.trim().length === 0 || passphrase !== passphrase.trim()) return false
+  return !/[\x00-\x1F\x7F]/.test(passphrase)
+}
+
+/**
+ * Validate runtime configuration and detect when NEXT_PUBLIC_CONTRACT_ID
+ * overrides the contract ID recorded in contracts/deployments/testnet.json.
+ */
+export function validateConfig(input: ConfigValidationInput): ConfigValidationResult {
+  const errors: ConfigIssue[] = []
+  const warnings: ConfigIssue[] = []
+
+  const override = input.contractIdOverride?.trim() || ''
+  const deployed = input.deployedContractId?.trim() || ''
+  const contractMismatch = override.length > 0 && deployed.length > 0 && override !== deployed
+
+  if (contractMismatch) {
+    warnings.push({
+      field: 'contractId',
+      severity: 'warning',
+      code: 'contract_mismatch',
+      message: `NEXT_PUBLIC_CONTRACT_ID (${override}) differs from the deployment record (${deployed}). Verify you are connected to the intended contract.`,
+    })
+  }
+
+  if (input.contractId && !CONTRACT_ID_RE.test(input.contractId)) {
+    errors.push({
+      field: 'contractId',
+      severity: 'error',
+      code: 'invalid_contract_id',
+      message: `Invalid contract ID "${input.contractId}": expected a 56-character Stellar contract address starting with "C".`,
+    })
+  }
+
+  if (!isValidRpcUrl(input.rpcUrl)) {
+    errors.push({
+      field: 'rpcUrl',
+      severity: 'error',
+      code: 'invalid_rpc_url',
+      message: `Invalid RPC URL "${input.rpcUrl}": must be a valid http:// or https:// URL.`,
+    })
+  }
+
+  if (!isValidNetworkPassphrase(input.networkPassphrase)) {
+    errors.push({
+      field: 'networkPassphrase',
+      severity: 'error',
+      code: 'invalid_network_passphrase',
+      message: `Invalid network passphrase "${input.networkPassphrase}": must be a non-empty single-line string without leading or trailing whitespace.`,
+    })
+  } else if (!KNOWN_NETWORK_PASSPHRASES.has(input.networkPassphrase)) {
+    warnings.push({
+      field: 'networkPassphrase',
+      severity: 'warning',
+      code: 'unknown_network_passphrase',
+      message: `Unrecognized network passphrase "${input.networkPassphrase}". Ensure it matches your target Stellar network.`,
+    })
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    contractMismatch,
+  }
+}
+
+export const configValidation: ConfigValidationResult = validateConfig({
+  contractId: config.contractId,
+  rpcUrl: config.rpcUrl,
+  networkPassphrase: config.networkPassphrase,
+  deployedContractId,
+  contractIdOverride: process.env.NEXT_PUBLIC_CONTRACT_ID,
+})
+
+for (const err of configValidation.errors) {
+  console.error(`[ComplyRail config] ${err.message}`)
+}
+for (const warn of configValidation.warnings) {
+  console.warn(`[ComplyRail config] ${warn.message}`)
+}
 
 /** Block explorer base URL for each network passphrase we know how to link to. */
 const EXPLORER_BASES: Record<string, string> = {
