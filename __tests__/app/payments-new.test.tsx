@@ -25,6 +25,12 @@ const ASSETS = [
 
 const getAssetBalance = vi.fn()
 const submitPayment = vi.fn()
+const NOW = 1_800_000_000
+const DAY = 86_400
+const vasps = [
+  { address: 'GOTHER', name: 'Other VASP', jurisdiction: 'US', status: 'active', expiresAt: NOW + DAY },
+  { address: 'GEXPIRED', name: 'Expired VASP', jurisdiction: 'US', status: 'active', expiresAt: NOW - 1 },
+]
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/components/WalletProvider', () => ({
@@ -32,9 +38,8 @@ vi.mock('@/components/WalletProvider', () => ({
 }))
 vi.mock('@/lib/hooks', () => ({
   useRole: () => ({ role: 'vasp' }),
-  useVasps: () => ({
-    vasps: [{ address: 'GOTHER', name: 'Other VASP', jurisdiction: 'US', status: 'active' }],
-  }),
+  useVasps: () => ({ vasps }),
+  useLedgerClock: () => ({ now: NOW, source: 'ledger', loading: false }),
 }))
 vi.mock('@/lib/wallet', () => ({ isValidStellarAddress: () => true }))
 vi.mock('@/lib/contract', () => ({
@@ -85,5 +90,17 @@ describe('Submit Payment balance check', () => {
 
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByRole('button', { name: /sign & submit/i })).not.toBeDisabled()
+  })
+
+  it('shows expired VASPs only as disabled options', () => {
+    const { container } = render(<NewPaymentPage />)
+    const toVaspSelect = container.querySelector('select[name="toVasp"]') as HTMLSelectElement
+    const expiredOption = toVaspSelect.querySelector('option[value="GEXPIRED"]') as HTMLOptionElement
+
+    expect(expiredOption).not.toBeNull()
+    expect(expiredOption.disabled).toBe(true)
+    expect(expiredOption.textContent).toContain('expired')
+    expect(expiredOption.parentElement?.label).toContain('expired')
+    expect((toVaspSelect.querySelector('option[value="GOTHER"]') as HTMLOptionElement).disabled).toBe(false)
   })
 })
