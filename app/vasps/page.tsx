@@ -166,23 +166,38 @@ export default function VaspsPage() {
           <form onSubmit={handleRegister} className="bg-card border border-border rounded-lg p-6 mb-8 space-y-4">
             <h2 className="text-xl font-semibold">Register VASP</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input required placeholder="Stellar address (G…)" value={form.address}
-                onChange={e => setForm({ ...form, address: e.target.value.trim() })}
-                className="px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
-              <input required placeholder="Legal name" value={form.name}
-                onChange={e => setForm({ ...form, name: e.target.value })} maxLength={FIELD_LIMITS.name}
-                className="px-3 py-2 border border-border rounded bg-background" />
-              <select required value={form.jurisdiction} onChange={e => setForm({ ...form, jurisdiction: e.target.value })}
-                className="px-3 py-2 border border-border rounded bg-background">
-                <option value="">Jurisdiction…</option>
-                {JURISDICTIONS.filter(j => j !== '*').map(j => <option key={j} value={j}>{j}</option>)}
-              </select>
-              <input placeholder="Registration valid for (days, optional)" type="number" min="1" value={form.expiresDays}
-                onChange={e => setForm({ ...form, expiresDays: e.target.value })}
-                className="px-3 py-2 border border-border rounded bg-background" />
-              <input required placeholder="IVMS101 encryption public key (64 hex chars)" value={form.publicKeyHex}
-                onChange={e => setForm({ ...form, publicKeyHex: e.target.value.trim() })}
-                className="md:col-span-2 px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
+              <div className="space-y-1">
+                <label htmlFor="vasp-address" className="block text-sm font-medium">Stellar address (required)</label>
+                <input id="vasp-address" required placeholder="G…" value={form.address}
+                  onChange={e => setForm({ ...form, address: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="vasp-name" className="block text-sm font-medium">Legal name (required)</label>
+                <input id="vasp-name" required placeholder="Legal name" value={form.name}
+                  onChange={e => setForm({ ...form, name: e.target.value })} maxLength={FIELD_LIMITS.name}
+                  className="w-full px-3 py-2 border border-border rounded bg-background" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="vasp-jurisdiction" className="block text-sm font-medium">Jurisdiction (required)</label>
+                <select id="vasp-jurisdiction" required value={form.jurisdiction} onChange={e => setForm({ ...form, jurisdiction: e.target.value })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background">
+                  <option value="">Select a jurisdiction</option>
+                  {JURISDICTIONS.filter(j => j !== '*').map(j => <option key={j} value={j}>{j}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="vasp-expires-days" className="block text-sm font-medium">Registration valid for (days, optional)</label>
+                <input id="vasp-expires-days" type="number" min="1" value={form.expiresDays}
+                  onChange={e => setForm({ ...form, expiresDays: e.target.value })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background" />
+              </div>
+              <div className="space-y-1 md:col-span-2">
+                <label htmlFor="vasp-public-key" className="block text-sm font-medium">IVMS101 encryption public key (64 hex chars, required)</label>
+                <input id="vasp-public-key" required placeholder="64 hex characters" value={form.publicKeyHex}
+                  onChange={e => setForm({ ...form, publicKeyHex: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-border rounded bg-background font-mono text-sm" />
+              </div>
             </div>
             {formError && <p className="text-sm text-red-600">{formError}</p>}
             <button type="submit" disabled={tx.pending || !!formError}
