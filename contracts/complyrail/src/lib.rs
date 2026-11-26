@@ -771,6 +771,7 @@ pub struct ThresholdSet {
     #[topic]
     pub asset: Address,
     pub jurisdiction: String,
+    pub previous: Option<i128>,
     pub amount: i128,
     /// `true` when the exact rule was removed (`amount` is then 0).
     pub removed: bool,
@@ -1233,6 +1234,7 @@ impl ComplyRail {
         let jurisdiction =
             normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
+        let previous: Option<i128> = env.storage().persistent().get(&key);
         // Keep the stored value even at 0: an explicit 0 overrides the `"*"`
         // fallback (fail closed), so it must not be deleted.
         env.storage().persistent().set(&key, &amount);
@@ -1242,6 +1244,7 @@ impl ComplyRail {
         ThresholdSet {
             asset,
             jurisdiction,
+            previous,
             amount,
             removed: false,
         }
@@ -1257,13 +1260,16 @@ impl ComplyRail {
         let jurisdiction =
             normalise_jurisdiction(&env, &jurisdiction).ok_or(Error::UnknownJurisdiction)?;
         let key = DataKey::Threshold(asset.clone(), jurisdiction.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(Error::ThresholdNotFound);
-        }
+        let previous: i128 = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ThresholdNotFound)?;
         env.storage().persistent().remove(&key);
         ThresholdSet {
             asset,
             jurisdiction,
+            previous: Some(previous),
             amount: 0,
             removed: true,
         }

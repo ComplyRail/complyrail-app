@@ -1,13 +1,45 @@
 import { ASSET_DECIMALS } from './config'
 
-export function formatAddress(address: string): string {
-  if (!address || address.length < 8) return address
-  return `${address.slice(0, 4)}...${address.slice(-4)}`
+/**
+ * The single truncation rule for on-chain identifiers: keep a prefix and an
+ * optional suffix, separated by one ellipsis. Short values are left untouched
+ * so truncation never makes an identifier longer than the original.
+ */
+export function truncateIdentifier(value: string, leading = 6, trailing = 6): string {
+  if (!value || value.length <= leading + trailing + 3) return value
+  return `${value.slice(0, leading)}...${trailing > 0 ? value.slice(-trailing) : ''}`
 }
 
+/** Stellar addresses and contract IDs are 56 characters: G/C + 55. */
+export function formatAddress(address: string): string {
+  return truncateIdentifier(address, 4, 4)
+}
+
+/** Hex hashes and references are typically 64 characters. */
 export function formatHash(hash: string): string {
-  if (!hash || hash.length < 12) return hash
-  return `${hash.slice(0, 6)}...${hash.slice(-6)}`
+  return truncateIdentifier(hash, 6, 6)
+}
+
+/** Shorten a long hex value while keeping both ends readable, e.g. for a table cell. */
+export function truncateMiddle(value: string, head = 8, tail = 8): string {
+  if (!value || value.length <= head + tail + 1) return value
+  return `${value.slice(0, head)}…${value.slice(-tail)}`
+}
+
+/**
+ * Returns true when the value looks like a Stellar address (G... 56 chars) or
+ * a transaction / contract hash (64 hex characters). These are the only values
+ * that should be abbreviated in the UI.
+ */
+export function isStellarAddressOrHash(value: string): boolean {
+  if (!value) return false
+  // Stellar public key: starts with G, 56 base32 characters
+  if (/^G[A-Z2-7]{55}$/.test(value)) return true
+  // Stellar contract ID: starts with C, 56 base32 characters
+  if (/^C[A-Z2-7]{55}$/.test(value)) return true
+  // Transaction or ledger hash: 64 hex characters
+  if (/^[0-9a-fA-F]{64}$/.test(value)) return true
+  return false
 }
 
 /**
