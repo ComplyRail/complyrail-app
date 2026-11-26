@@ -30,7 +30,7 @@ The app uses a Next.js route handler and cannot be deployed as a static GitHub P
 - `VERCEL_ORG_ID`: the Vercel team or account ID
 - `VERCEL_PROJECT_ID`: the Vercel project ID
 
-The dashboard reads the contract ID from `contracts/deployments/testnet.json`, so a new contract deployment goes live on the site automatically. To use a different deployment, set `NEXT_PUBLIC_CONTRACT_ID`.
+The dashboard reads the contract ID from `contracts/deployments/testnet.json`, so a new contract deployment goes live on the site automatically. To use a different deployment, set `NEXT_PUBLIC_CONTRACT_ID`. All supported environment variables are listed in [`.env.example`](./.env.example); the build runs `npm run check:env` and fails if the contract ID is absent or any configured public value is invalid.
 
 | Variable | Default |
 |---|---|

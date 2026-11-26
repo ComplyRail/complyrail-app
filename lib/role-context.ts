@@ -1,5 +1,5 @@
 import { createContext } from 'react'
-import type { Role } from './rbac'
+import type { Role } from './types'
 
 export interface SharedRole {
   /** Wallet the role was fetched for. */

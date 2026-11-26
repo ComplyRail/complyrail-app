@@ -5,7 +5,7 @@ import * as api from './contract'
 import type { PaymentPage } from './contract'
 import { ASSETS, AssetOption, config, isContractConfigured, verifyAssetContracts } from './config'
 import { RoleContext } from './role-context'
-import type { Role } from './rbac'
+import type { Role } from './types'
 import type { AuditEvent, PaymentRecord, ThresholdRow, VaspEntry } from './types'
 
 interface AsyncState<T> {

@@ -44,6 +44,8 @@ The dashboard is deployed to Vercel on every push to `main` (`.github/workflows/
 
 New here? [CONTRIBUTING.md](./CONTRIBUTING.md) walks through setup from a clean machine, getting testnet funds, and how to submit a PR.
 
+Copy [`.env.example`](./.env.example) to `.env.local` and adjust the values you need. Every `NEXT_PUBLIC_*` variable is documented there; `npm run build` runs `npm run check:env` first and fails when a variable without a default is missing or a configured value is invalid.
+
 ```bash
 npm install --legacy-peer-deps
 npm run dev          # http://localhost:3000
