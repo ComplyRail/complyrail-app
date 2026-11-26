@@ -4217,9 +4217,23 @@ fn set_threshold_emits_thr_set() {
     assert_eq!(
         t.env.events().all().filter_by_contract(&t.client.address),
         [ThresholdSet {
+            asset: a.clone(),
+            jurisdiction: s(&t.env, "GB"),
+            previous: None,
+            amount: 500,
+            removed: false,
+        }
+        .to_xdr(&t.env, &t.client.address)]
+    );
+
+    t.client.set_threshold(&a, &s(&t.env, "GB"), &1_500);
+    assert_eq!(
+        t.env.events().all().filter_by_contract(&t.client.address),
+        [ThresholdSet {
             asset: a,
             jurisdiction: s(&t.env, "GB"),
-            amount: 500,
+            previous: Some(500),
+            amount: 1_500,
             removed: false,
         }
         .to_xdr(&t.env, &t.client.address)]
@@ -4412,4 +4426,276 @@ fn admin_handover_emits_adm_prop_and_adm_acc() {
         }
         .to_xdr(&t.env, &t.client.address)]
     );
+}
+
+// ----- property tests: escrow balance invariants ---------------------------
+
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^ (z >> 31)
+    }
+
+    fn range(&mut self, bound: usize) -> usize {
+        (self.next_u64() as usize) % bound
+    }
+}
+
+#[test]
+fn property_escrow_balance_and_single_transition_invariants() {
+    const SEQUENCES: u64 = 500;
+    const STEPS_PER_SEQ: usize = 6;
+    const MAX_PAYMENTS: usize = (SEQUENCES as usize) * STEPS_PER_SEQ;
+    const TTL: u64 = 100;
+    const MINT_PER_VASP: i128 = 100_000_000;
+
+    let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+    let mut now: u64 = 1_000;
+    env.ledger().set_timestamp(now);
+
+    let admin = Address::generate(&env);
+    let threshold_admin = Address::generate(&env);
+    let vasps = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let beneficiaries = [Address::generate(&env), Address::generate(&env)];
+
+    let issuer = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(issuer);
+    let token_addr = sac.address();
+    let sac_client = StellarAssetClient::new(&env, &token_addr);
+    for v in &vasps {
+        sac_client.mint(v, &MINT_PER_VASP);
+    }
+    let token = TokenClient::new(&env, &token_addr);
+    let total_supply = MINT_PER_VASP * (vasps.len() as i128);
+
+    let id = env.register(
+        ComplyRail,
+        (admin.clone(), threshold_admin.clone(), Some(TTL)),
+    );
+    let client = ComplyRailClient::new(&env, &id);
+
+    let jurisdictions = ["US", "US", "GB", "GB"];
+    for (i, v) in vasps.iter().enumerate() {
+        client.register_vasp(
+            v,
+            &s(&env, "VASP"),
+            &s(&env, jurisdictions[i]),
+            &key(&env, (i + 1) as u8),
+            &None,
+        );
+    }
+    client.set_threshold(&token_addr, &s(&env, "US"), &3_000);
+    client.set_threshold(&token_addr, &s(&env, "GB"), &1_000);
+    client.set_asset_allowed(&token_addr, &true);
+
+    // Track (status, amount, transitions) for every created payment id.
+    let mut tracked: [Option<(PaymentStatus, i128, u8)>; MAX_PAYMENTS] = [None; MAX_PAYMENTS];
+    let mut pending_sum: i128 = 0;
+    let mut payment_count: u64 = 0;
+
+    let mut total_submitted = 0u64;
+    let mut total_attested = 0u64;
+    let mut total_acked = 0u64;
+    let mut total_released = 0u64;
+    let mut total_rejected = 0u64;
+    let mut total_reclaimed = 0u64;
+
+    for seed in 1..=SEQUENCES {
+        let mut rng = SplitMix64::new(seed);
+        let seq_start = payment_count;
+
+        for step in 0..STEPS_PER_SEQ {
+            let seq_count = payment_count - seq_start;
+            // Bias toward submitting early in each sequence so there are active payments.
+            let action = if seq_count == 0 { 0 } else { rng.range(10) };
+
+            let touched_pid: Option<u64> = match action {
+                // submit_payment (30% of steps, or first step of each sequence)
+                0 | 1 | 2 => {
+                    let from_idx = rng.range(vasps.len());
+                    let mut to_idx = rng.range(vasps.len());
+                    if to_idx == from_idx && rng.range(4) != 0 {
+                        to_idx = (to_idx + 1) % vasps.len();
+                    }
+                    let ben_idx = rng.range(beneficiaries.len());
+                    let amount = match rng.range(5) {
+                        0 => (rng.next_u64() % 999 + 1) as i128,
+                        1 => (rng.next_u64() % 2_000 + 1_000) as i128,
+                        2 | 3 => (rng.next_u64() % 7_000 + 3_000) as i128,
+                        _ => 0, // invalid amount error path
+                    };
+                    match client.try_submit_payment(
+                        &vasps[from_idx],
+                        &vasps[to_idx],
+                        &beneficiaries[ben_idx],
+                        &token_addr,
+                        &amount,
+                        &None,
+                    ) {
+                        Ok(Ok(pid)) => {
+                            total_submitted += 1;
+                            payment_count += 1;
+                            Some(pid)
+                        }
+                        _ => None,
+                    }
+                }
+                // submit_attestation
+                3 | 4 => {
+                    let pid = seq_start + (rng.next_u64() % seq_count);
+                    let hash = key(&env, ((seed + step as u64) & 0xff) as u8);
+                    if client
+                        .try_submit_attestation(&pid, &hash, &s(&env, "IVMS101.2023"))
+                        .is_ok()
+                    {
+                        total_attested += 1;
+                    }
+                    Some(pid)
+                }
+                // acknowledge_attestation
+                5 => {
+                    let pid = seq_start + (rng.next_u64() % seq_count);
+                    if client.try_acknowledge_attestation(&pid).is_ok() {
+                        total_acked += 1;
+                    }
+                    Some(pid)
+                }
+                // release_payment (either beneficiary VASP or admin override)
+                6 => {
+                    let pid = seq_start + (rng.next_u64() % seq_count);
+                    let p = client.get_payment(&pid);
+                    let caller = if rng.range(2) == 0 {
+                        p.to_vasp
+                    } else {
+                        admin.clone()
+                    };
+                    if client.try_release_payment(&pid, &caller).is_ok() {
+                        total_released += 1;
+                    }
+                    Some(pid)
+                }
+                // reject_payment (either beneficiary VASP or admin)
+                7 => {
+                    let pid = seq_start + (rng.next_u64() % seq_count);
+                    let p = client.get_payment(&pid);
+                    let caller = if rng.range(2) == 0 {
+                        p.to_vasp
+                    } else {
+                        admin.clone()
+                    };
+                    if client
+                        .try_reject_payment(&pid, &caller, &s(&env, "compliance reject"), &None)
+                        .is_ok()
+                    {
+                        total_rejected += 1;
+                    }
+                    Some(pid)
+                }
+                // reclaim_expired
+                8 => {
+                    let pid = seq_start + (rng.next_u64() % seq_count);
+                    if client.try_reclaim_expired(&pid).is_ok() {
+                        total_reclaimed += 1;
+                    }
+                    Some(pid)
+                }
+                // advance ledger time so some payments expire
+                _ => {
+                    let delta = (rng.next_u64() % 120) + 10;
+                    now += delta;
+                    env.ledger().set_timestamp(now);
+                    None
+                }
+            };
+
+            // Update tracked state & verify single-transition invariant for touched payment.
+            if let Some(pid) = touched_pid {
+                let p = client.get_payment(&pid);
+                let idx = pid as usize;
+                match &mut tracked[idx] {
+                    None => {
+                        if p.status == PaymentStatus::Pending {
+                            pending_sum += p.amount;
+                        }
+                        tracked[idx] = Some((p.status, p.amount, 0));
+                    }
+                    Some((prev_status, amount, transitions)) => {
+                        if *prev_status != p.status {
+                            assert_eq!(
+                                *prev_status,
+                                PaymentStatus::Pending,
+                                "seed={seed} step={step} pid={pid}: terminal state {prev_status:?} changed to {:?}",
+                                p.status
+                            );
+                            *transitions += 1;
+                            assert!(
+                                *transitions <= 1,
+                                "seed={seed} step={step} pid={pid}: payment changed state {} times",
+                                *transitions
+                            );
+                            pending_sum -= *amount;
+                            *prev_status = p.status;
+                        }
+                    }
+                }
+            }
+
+            // Assert escrow balance invariant after every step.
+            let contract_balance = token.balance(&client.address);
+            assert_eq!(
+                contract_balance, pending_sum,
+                "seed={seed} step={step}: contract balance ({contract_balance}) != pending sum ({pending_sum})"
+            );
+        }
+    }
+
+    // Cross-check full ledger scan of all payments and total token conservation.
+    let final_count = client.payment_count();
+    assert_eq!(final_count, payment_count);
+    let mut scanned_pending_sum: i128 = 0;
+    for pid in 0..final_count {
+        let p = client.get_payment(&pid);
+        if p.status == PaymentStatus::Pending {
+            scanned_pending_sum += p.amount;
+        }
+        let (tracked_status, _, transitions) = tracked[pid as usize].unwrap();
+        assert_eq!(p.status, tracked_status);
+        assert!(transitions <= 1);
+    }
+    let final_contract_balance = token.balance(&client.address);
+    assert_eq!(final_contract_balance, scanned_pending_sum);
+
+    let mut accounted = final_contract_balance;
+    for v in &vasps {
+        accounted += token.balance(v);
+    }
+    for b in &beneficiaries {
+        accounted += token.balance(b);
+    }
+    assert_eq!(accounted, total_supply);
+
+    // Ensure every operation was actually exercised across the 500 sequences.
+    assert!(total_submitted > 0, "no payments submitted");
+    assert!(total_attested > 0, "no attestations submitted");
+    assert!(total_acked > 0, "no attestations acknowledged");
+    assert!(total_released > 0, "no payments released");
+    assert!(total_rejected > 0, "no payments rejected");
+    assert!(total_reclaimed > 0, "no payments reclaimed");
 }

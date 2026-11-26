@@ -3,7 +3,7 @@
 import { useCallback, useContext, useEffect, useState } from 'react'
 import * as api from './contract'
 import type { PaymentPage } from './contract'
-import { isContractConfigured } from './config'
+import { ASSETS, AssetOption, config, isContractConfigured, verifyAssetContracts } from './config'
 import { RoleContext } from './role-context'
 import type { Role } from './rbac'
 import type { AuditEvent, PaymentRecord, ThresholdRow, VaspEntry } from './types'
@@ -85,6 +85,31 @@ export function useLedgerClock(): LedgerClock {
     source: offset === null ? 'browser' : 'ledger',
     loading,
   }
+}
+
+/**
+ * Verifies each configured asset contract exists on-chain once at startup.
+ * Returns a snapshot of the ASSETS array with `available` set for each entry.
+ * An asset with `available = false` should be hidden or disabled in the UI.
+ */
+export function useAssets(): { assets: AssetOption[]; loading: boolean } {
+  const [assets, setAssets] = useState<AssetOption[]>(ASSETS)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!isContractConfigured) {
+      setLoading(false)
+      return
+    }
+    verifyAssetContracts(config.rpcUrl, config.networkPassphrase)
+      .finally(() => {
+        // Re-snapshot the mutated ASSETS array so React re-renders.
+        setAssets([...ASSETS])
+        setLoading(false)
+      })
+  }, [])
+
+  return { assets, loading }
 }
 
 export function useVasps() {

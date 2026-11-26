@@ -33,3 +33,29 @@ for (const route of ROUTES) {
     expect(errors, 'uncaught page errors').toEqual([])
   })
 }
+
+/** Home cards are named by their heading, not by the decorative emoji or blurb. */
+const HOME_CARDS: { href: string; name: string }[] = [
+  { href: '/vasps', name: 'VASP Directory' },
+  { href: '/thresholds', name: 'Thresholds' },
+  { href: '/payments', name: 'Payments' },
+  { href: '/payments/new', name: 'Submit Payment' },
+  { href: '/audit', name: 'Audit Log' },
+  { href: '/admin', name: 'Contract' },
+]
+
+test('home card links have their heading as the accessible name', async ({ page }) => {
+  await page.goto('/')
+
+  const cards = page.locator('a[aria-labelledby^="home-card-"]')
+  await expect(cards).toHaveCount(HOME_CARDS.length)
+
+  for (const { href, name } of HOME_CARDS) {
+    const card = page.locator(`a[href="${href}"][aria-labelledby^="home-card-"]`)
+    await expect(card).toHaveAccessibleName(new RegExp(`^${name}$`))
+  }
+
+  for (const icon of await cards.locator(':scope > div').all()) {
+    await expect(icon).toHaveAttribute('aria-hidden', 'true')
+  }
+})

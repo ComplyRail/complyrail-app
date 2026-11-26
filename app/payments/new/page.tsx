@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useRole, useVasps } from '@/lib/hooks'
+import { useLedgerClock, useRole, useVasps } from '@/lib/hooks'
 import { TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { ASSETS, assetSymbol } from '@/lib/config'
@@ -10,11 +10,13 @@ import { exceedsBalance, fromUnits, toUnits } from '@/lib/format'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { getAssetBalance, submitPayment } from '@/lib/contract'
 import { VaspStatus } from '@/lib/types'
+import { expiryState } from '@/lib/vasp-expiry'
 import { externalRefArg } from '@/lib/contract'
 
 export default function NewPaymentPage() {
   const router = useRouter()
   const { vasps } = useVasps()
+  const clock = useLedgerClock()
   const { address } = useWallet()
   const { role } = useRole(address)
   const tx = useTx()
@@ -55,7 +57,13 @@ export default function NewPaymentPage() {
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [e.target.name]: e.target.value }))
 
-  const counterparties = vasps.filter(v => v.status === VaspStatus.Active && v.address !== address)
+  const registeredCounterparties = vasps.filter(v => v.status === VaspStatus.Active && v.address !== address)
+  const expiredCounterparties = registeredCounterparties.filter(
+    v => expiryState(v.expiresAt, clock.now).kind === 'expired',
+  )
+  const selectableCounterparties = registeredCounterparties.filter(
+    v => expiryState(v.expiresAt, clock.now).kind !== 'expired',
+  )
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -106,9 +114,18 @@ export default function NewPaymentPage() {
           <Field label="To VASP">
             <select name="toVasp" value={form.toVasp} onChange={onChange} required className={inputCls}>
               <option value="">Select beneficiary VASP…</option>
-              {counterparties.map(v => (
+              {selectableCounterparties.map(v => (
                 <option key={v.address} value={v.address}>{v.name} ({v.jurisdiction})</option>
               ))}
+              {expiredCounterparties.length > 0 && (
+                <optgroup label="Unavailable - expired registration">
+                  {expiredCounterparties.map(v => (
+                    <option key={v.address} value={v.address} disabled>
+                      {v.name} ({v.jurisdiction}) - expired
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </Field>
           <Field label="Beneficiary address">

@@ -1,12 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const from = vi.hoisted(() => vi.fn())
+const clientCtor = vi.hoisted(() => vi.fn())
 
-vi.mock('@stellar/stellar-sdk', async importOriginal => {
-  const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>()
-  return { ...actual, contract: { ...actual.contract, Client: { from } } }
-})
+vi.mock('@/packages/complyrail-client/src', () => ({
+  Client: clientCtor,
+}))
 
 vi.mock('@/lib/config', async importOriginal => {
   const actual = await importOriginal<typeof import('@/lib/config')>()
@@ -37,11 +36,13 @@ const signer: Signer = { walletId: 'freighter', publicKey: G1, signTransaction: 
 describe('contract writes: final transaction status', () => {
   beforeEach(() => {
     clearClientCache()
-    from.mockReset()
+    clientCtor.mockReset()
   })
 
   it('throws a typed error carrying the hash when the transaction FAILED', async () => {
-    from.mockResolvedValue(clientReturning('FAILED'))
+    clientCtor.mockImplementation(function () {
+      return clientReturning('FAILED')
+    })
     const err = await releasePayment(signer, '1').catch(e => e)
     expect(err).toBeInstanceOf(TxFailedError)
     expect(err.txHash).toBe(HASH)
@@ -49,7 +50,9 @@ describe('contract writes: final transaction status', () => {
   })
 
   it('resolves when the transaction SUCCEEDED', async () => {
-    from.mockResolvedValue(clientReturning('SUCCESS'))
+    clientCtor.mockImplementation(function () {
+      return clientReturning('SUCCESS')
+    })
     await expect(releasePayment(signer, '1')).resolves.toBeUndefined()
   })
 })
