@@ -341,11 +341,19 @@ export async function listPaymentsByVasp(vasp: string, start = 0, limit = PAYMEN
   return raws.map(mapPayment)
 }
 
+/**
+ * Returns the payment, or `null` when the contract reports it does not exist.
+ * Transport and other failures are thrown so callers can distinguish a load
+ * error from a confirmed missing payment.
+ */
 export async function getPayment(id: string): Promise<PaymentRecord | null> {
   try {
     return mapPayment(await read<RawPayment>('get_payment', { payment_id: BigInt(id) }))
-  } catch {
-    return null
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    // Contract error 7 = "Payment not found" (contracts/complyrail/src/lib.rs).
+    if (/Error\(Contract, #7\)/.test(msg)) return null
+    throw e
   }
 }
 
