@@ -9,6 +9,7 @@ import { assetSymbol, isContractConfigured } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
 import { PaymentStatus } from '@/lib/types'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
+import { CopyableValue } from '@/components/CopyableValue'
 
 const STATUS_OPTIONS: Array<{ value: '' | PaymentStatus; label: string }> = [
   { value: '', label: 'All statuses' },
@@ -119,8 +120,12 @@ export default function PaymentsPage() {
               { header: '#', className: 'font-mono text-sm', cell: p => (
                 <Link href={`/payments/view?id=${p.id}`} className="text-primary hover:underline">#{p.id}</Link>
               ) },
-              { header: 'From VASP', className: 'font-mono text-sm', cell: p => formatAddress(p.fromVasp) },
-              { header: 'To VASP', className: 'font-mono text-sm', cell: p => formatAddress(p.toVasp) },
+              { header: 'From VASP', className: 'font-mono text-sm', cell: p => (
+                <CopyableValue value={p.fromVasp} variant="address" label="Copy from VASP address" />
+              ) },
+              { header: 'To VASP', className: 'font-mono text-sm', cell: p => (
+                <CopyableValue value={p.toVasp} variant="address" label="Copy to VASP address" />
+              ) },
               { header: 'Amount', className: 'font-mono', cell: p => <>{fromUnits(p.amount)} {assetSymbol(p.asset)}</> },
               { header: 'Status', cell: p => <StatusBadge status={p.status} type="payment" /> },
               { header: 'Created', className: 'text-sm text-muted-foreground', cell: p => new Date(p.createdAt * 1000).toLocaleString() },

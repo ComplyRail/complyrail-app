@@ -60,10 +60,23 @@ describe('hex helpers', () => {
 })
 
 describe('display helpers', () => {
-  it('shortens addresses and hashes', () => {
+  it('truncates identifiers with one shared rule', () => {
+    expect(truncateIdentifier('0123456789abcdef0123')).toBe('012345...ef0123')
+    expect(truncateIdentifier('0123456789abcdef0123', 4, 4)).toBe('0123...cdef')
+    expect(truncateIdentifier('0123456789abcdef0123', 7, 0)).toBe('0123456...')
+  })
+
+  it('does not lengthen short or empty identifiers', () => {
+    expect(truncateIdentifier('')).toBe('')
+    expect(truncateIdentifier('short')).toBe('short')
+    expect(truncateIdentifier('0123456789ab')).toBe('0123456789ab')
+  })
+
+  it('shortens addresses and hashes through the same helper', () => {
     expect(formatAddress('GABCDEFGHIJKLMNOP')).toBe('GABC...MNOP')
     expect(formatAddress('short')).toBe('short')
     expect(formatHash('0123456789abcdef0123')).toBe('012345...ef0123')
+    expect(formatHash('short')).toBe('short')
   })
 })
 

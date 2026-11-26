@@ -3,8 +3,8 @@
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { useWallet } from '@/components/WalletProvider'
+import { CopyableValue } from '@/components/CopyableValue'
 import { useRole } from '@/lib/hooks'
-import { formatAddress } from '@/lib/format'
 
 const NAV = [
   { href: '/vasps', label: 'VASPs' },
@@ -64,8 +64,9 @@ export function Header() {
             </span>
             {address ? (
               <>
-                <div className="hidden sm:block px-3 py-2 bg-accent/10 rounded text-sm font-mono" title={address}>
-                  {formatAddress(address)} · {role === 'inactive-vasp' ? 'inactive VASP' : role}
+                <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-accent/10 rounded text-sm font-mono">
+                  <CopyableValue value={address} variant="address" label="Copy wallet address" />
+                  <span>· {role === 'inactive-vasp' ? 'inactive VASP' : role}</span>
                 </div>
                 <button onClick={disconnect} className="px-4 py-2 rounded border border-border hover:bg-muted text-sm">
                   Disconnect

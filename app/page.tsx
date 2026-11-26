@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useWallet } from '@/components/WalletProvider'
+import { CopyablePrefix } from '@/components/CopyableValue'
 import { useRole } from '@/lib/hooks'
 
 export default function Home() {
@@ -106,9 +107,14 @@ export default function Home() {
               <div aria-hidden="true" className="text-4xl mb-4">🔐</div>
               <h3 className="text-xl font-semibold mb-2">Security</h3>
               <p className="text-muted-foreground">
-                {connectedAddress
-                  ? `Connected as ${connectedAddress.slice(0, 10)}... (${role})`
-                  : 'Connect wallet to authenticate'}
+                {connectedAddress ? (
+                  <>
+                    Connected as{' '}
+                    <CopyablePrefix value={connectedAddress} leading={10} label="Copy wallet address" /> ({role})
+                  </>
+                ) : (
+                  'Connect wallet to authenticate'
+                )}
               </p>
             </div>
           </div>

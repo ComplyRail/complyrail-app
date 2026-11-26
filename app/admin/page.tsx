@@ -4,10 +4,12 @@ import Link from 'next/link'
 import { useState } from 'react'
 import deployment from '../../contracts/deployments/testnet.json'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
+import { CopyableValue } from '@/components/CopyableValue'
 import { useWallet } from '@/components/WalletProvider'
 import { useAdmin, usePayments, usePendingAdmin, useVasps } from '@/lib/hooks'
 import { config, isContractConfigured } from '@/lib/config'
 import { acceptAdmin, cancelAdminProposal, proposeAdmin } from '@/lib/contract'
+import { formatAddress, truncateIdentifier } from '@/lib/format'
 
 const STELLAR_ADDRESS = /^G[A-Z2-7]{55}$/
 
@@ -41,10 +43,16 @@ export default function ContractPage() {
           <div className="bg-card border border-border rounded-lg p-6 text-sm space-y-3">
             <Row label="Network">Stellar testnet</Row>
             <Row label="Contract ID">
-              <ExplorerLink kind="contract" id={config.contractId} />
+              <CopyableValue value={config.contractId} variant="address" label="Copy contract ID">
+                <ExplorerLink kind="contract" id={config.contractId}>{formatAddress(config.contractId)}</ExplorerLink>
+              </CopyableValue>
             </Row>
             <Row label="Admin">
-              {loading ? '…' : admin ? <ExplorerLink kind="account" id={admin} /> : 'unknown'}
+              {loading ? '…' : admin ? (
+                <CopyableValue value={admin} variant="address" label="Copy admin address">
+                  <ExplorerLink kind="account" id={admin}>{formatAddress(admin)}</ExplorerLink>
+                </CopyableValue>
+              ) : 'unknown'}
               {address && admin === address && <span className="ml-2 text-green-700">(you)</span>}
             </Row>
             <Row label="RPC">{config.rpcUrl}</Row>
@@ -136,7 +144,9 @@ function TransferAdminCard({ admin, onAdminChanged }: { admin: string | null; on
       {pendingAdmin ? (
         <div className="flex flex-wrap items-center gap-3">
           <span>Pending admin:</span>
-          <ExplorerLink kind="account" id={pendingAdmin} />
+          <CopyableValue value={pendingAdmin} variant="address" label="Copy pending admin address">
+            <ExplorerLink kind="account" id={pendingAdmin}>{formatAddress(pendingAdmin)}</ExplorerLink>
+          </CopyableValue>
           {isAdmin && (
             <button onClick={cancel} disabled={tx.pending}
               className="px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50">

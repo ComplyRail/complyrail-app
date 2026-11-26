@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useAuditEvents } from '@/lib/hooks'
 import { formatAddress, isStellarAddressOrHash } from '@/lib/format'
 import { ExplorerLink } from '@/components/Notice'
+import { CopyableValue } from '@/components/CopyableValue'
 import { ResponsiveTable } from '@/components/ResponsiveTable'
 
 const EVENT_TYPES = [
@@ -235,7 +236,9 @@ export default function AuditLogPage() {
               <span className="inline-block px-2 py-1 rounded bg-muted text-xs font-mono">{event.type}</span>
             ) },
             { header: 'Subject', className: 'text-sm font-mono', cell: event =>
-              /^\d+$/.test(event.subject) ? `#${event.subject}` : formatAddress(event.subject) },
+              /^\d+$/.test(event.subject)
+                ? `#${event.subject}`
+                : <CopyableValue value={event.subject} variant="address" label="Copy subject address" /> },
             { header: 'Description', className: 'text-sm', cell: event => (
               <>
                 {event.description}
@@ -247,7 +250,9 @@ export default function AuditLogPage() {
               </>
             ) },
             { header: 'Tx', className: 'text-sm font-mono', cell: event => (
-              <ExplorerLink kind="tx" id={event.txHash}>{event.txHash.slice(0, 8)}</ExplorerLink>
+              <CopyableValue value={event.txHash} label="Copy transaction hash">
+                <ExplorerLink kind="tx" id={event.txHash}>{formatHash(event.txHash)}</ExplorerLink>
+              </CopyableValue>
             ) },
           ]}
         />

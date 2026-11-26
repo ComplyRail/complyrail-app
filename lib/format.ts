@@ -1,13 +1,23 @@
 import { ASSET_DECIMALS } from './config'
 
-export function formatAddress(address: string): string {
-  if (!address || address.length < 8) return address
-  return `${address.slice(0, 4)}...${address.slice(-4)}`
+/**
+ * The single truncation rule for on-chain identifiers: keep a prefix and an
+ * optional suffix, separated by one ellipsis. Short values are left untouched
+ * so truncation never makes an identifier longer than the original.
+ */
+export function truncateIdentifier(value: string, leading = 6, trailing = 6): string {
+  if (!value || value.length <= leading + trailing + 3) return value
+  return `${value.slice(0, leading)}...${trailing > 0 ? value.slice(-trailing) : ''}`
 }
 
+/** Stellar addresses and contract IDs are 56 characters: G/C + 55. */
+export function formatAddress(address: string): string {
+  return truncateIdentifier(address, 4, 4)
+}
+
+/** Hex hashes and references are typically 64 characters. */
 export function formatHash(hash: string): string {
-  if (!hash || hash.length < 12) return hash
-  return `${hash.slice(0, 6)}...${hash.slice(-6)}`
+  return truncateIdentifier(hash, 6, 6)
 }
 
 /** Shorten a long hex value while keeping both ends readable, e.g. for a table cell. */
