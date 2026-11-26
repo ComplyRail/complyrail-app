@@ -1,15 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const from = vi.hoisted(() => vi.fn())
+const clientCtor = vi.hoisted(() => vi.fn())
 
-vi.mock('@stellar/stellar-sdk', async importOriginal => {
-  const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>()
-  return {
-    ...actual,
-    contract: { ...actual.contract, Client: { from } },
-  }
-})
+vi.mock('@/packages/complyrail-client/src', () => ({
+  Client: clientCtor,
+}))
 
 vi.mock('@/lib/config', async importOriginal => {
   const actual = await importOriginal<typeof import('@/lib/config')>()
@@ -38,8 +34,10 @@ function signerFor(walletId: string): Signer {
 
 describe('contract client cache', () => {
   beforeEach(() => {
-    from.mockReset()
-    from.mockImplementation(async () => fakeClient())
+    clientCtor.mockReset()
+    clientCtor.mockImplementation(function () {
+      return fakeClient()
+    })
     clearClientCache()
   })
 
@@ -47,7 +45,7 @@ describe('contract client cache', () => {
     const s = signerFor('freighter')
     await releasePayment(s, '1')
     await releasePayment(s, '2')
-    expect(from).toHaveBeenCalledTimes(1)
+    expect(clientCtor).toHaveBeenCalledTimes(1)
   })
 
   it('creates a new client after disconnect, with the new signer', async () => {
@@ -57,14 +55,14 @@ describe('contract client cache', () => {
 
     const second = signerFor('freighter')
     await releasePayment(second, '1')
-    expect(from).toHaveBeenCalledTimes(2)
-    expect(from.mock.calls[1][0].signTransaction).toBe(second.signTransaction)
-    expect(from.mock.calls[1][0].signTransaction).not.toBe(first.signTransaction)
+    expect(clientCtor).toHaveBeenCalledTimes(2)
+    expect(clientCtor.mock.calls[1][0].signTransaction).toBe(second.signTransaction)
+    expect(clientCtor.mock.calls[1][0].signTransaction).not.toBe(first.signTransaction)
   })
 
   it('keys clients by wallet as well as address', async () => {
     await releasePayment(signerFor('freighter'), '1')
     await releasePayment(signerFor('albedo'), '1')
-    expect(from).toHaveBeenCalledTimes(2)
+    expect(clientCtor).toHaveBeenCalledTimes(2)
   })
 })
