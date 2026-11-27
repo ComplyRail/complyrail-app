@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useRole, useVasps } from '@/lib/hooks'
+import { useLedgerClock, useRole, useVasps } from '@/lib/hooks'
 import { TxStatus, useTx } from '@/components/Notice'
 import { useWallet } from '@/components/WalletProvider'
 import { ASSETS, assetSymbol } from '@/lib/config'
@@ -10,24 +10,99 @@ import { exceedsBalance, fromUnits, toUnits } from '@/lib/format'
 import { isValidStellarAddress } from '@/lib/wallet'
 import { getAssetBalance, submitPayment } from '@/lib/contract'
 import { VaspStatus } from '@/lib/types'
+import { expiryState } from '@/lib/vasp-expiry'
 import { externalRefArg } from '@/lib/contract'
+
+interface PaymentDraft {
+  toVasp: string
+  beneficiary: string
+  asset: string
+  amount: string
+  externalRef: string
+}
+
+function getDraftStorageKey(address: string | null | undefined): string {
+  return `complyrail:payment_draft:${address || 'anonymous'}`
+}
+
+export function loadPaymentDraft(address: string | null | undefined): PaymentDraft | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(getDraftStorageKey(address))
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      return {
+        toVasp: typeof parsed.toVasp === 'string' ? parsed.toVasp : '',
+        beneficiary: typeof parsed.beneficiary === 'string' ? parsed.beneficiary : '',
+        asset: typeof parsed.asset === 'string' ? parsed.asset : ASSETS[0].contractId,
+        amount: typeof parsed.amount === 'string' ? parsed.amount : '',
+        externalRef: typeof parsed.externalRef === 'string' ? parsed.externalRef : '',
+      }
+    }
+  } catch {
+    // Ignore JSON parse errors or restricted storage
+  }
+  return null
+}
+
+export function savePaymentDraft(address: string | null | undefined, draft: PaymentDraft): void {
+  if (typeof window === 'undefined') return
+  try {
+    sessionStorage.setItem(getDraftStorageKey(address), JSON.stringify(draft))
+  } catch {
+    // Ignore restricted storage
+  }
+}
+
+export function clearPaymentDraft(address: string | null | undefined): void {
+  if (typeof window === 'undefined') return
+  try {
+    sessionStorage.removeItem(getDraftStorageKey(address))
+  } catch {
+    // Ignore restricted storage
+  }
+}
 
 export default function NewPaymentPage() {
   const router = useRouter()
   const { vasps } = useVasps()
+  const clock = useLedgerClock()
   const { address } = useWallet()
   const { role } = useRole(address)
   const tx = useTx()
-  const [form, setForm] = useState({
-    toVasp: '',
-    beneficiary: '',
-    asset: ASSETS[0].contractId,
-    amount: '',
-    externalRef: '',
+  const [form, setForm] = useState<PaymentDraft>(() => {
+    const saved = loadPaymentDraft(address)
+    return (
+      saved ?? {
+        toVasp: '',
+        beneficiary: '',
+        asset: ASSETS[0].contractId,
+        amount: '',
+        externalRef: '',
+      }
+    )
   })
   const [formError, setFormError] = useState<string | null>(null)
   const [balance, setBalance] = useState<bigint | null>(null)
   const [balanceError, setBalanceError] = useState(false)
+  // The contract picks the threshold by the originator's jurisdiction, so the
+  // preview has to look it up the same way rather than assuming a flat limit.
+  const { vasp: originVasp } = useVasp(address ?? '')
+  const { threshold, loading: thresholdLoading } = useThreshold(form.asset, originVasp?.jurisdiction)
+
+  // When connected address changes, restore draft for that wallet if present
+  useEffect(() => {
+    const saved = loadPaymentDraft(address)
+    if (saved) {
+      setForm(saved)
+    }
+  }, [address])
+
+  // Save draft to sessionStorage whenever form fields change
+  useEffect(() => {
+    savePaymentDraft(address, form)
+  }, [address, form])
 
   // Refresh the connected wallet's balance whenever the wallet or asset changes.
   useEffect(() => {
@@ -52,10 +127,35 @@ export default function NewPaymentPage() {
   })()
   const overBalance = parsedAmount !== null && exceedsBalance(parsedAmount, balance)
 
+  // Mirrors `submit_payment`: amount >= threshold needs an attestation, and a
+  // missing rule reads as 0, so the preview fails closed like the contract does.
+  const attestationPreview = (() => {
+    if (!address || !originVasp?.jurisdiction || parsedAmount === null || parsedAmount <= 0n) return null
+    if (thresholdLoading || threshold === null) {
+      return { tone: 'checking' as const, text: 'Checking the Travel Rule threshold…' }
+    }
+    const limit = `${fromUnits(threshold)} ${assetSymbol(form.asset)} for ${originVasp.jurisdiction}`
+    return parsedAmount >= threshold
+      ? {
+          tone: 'required' as const,
+          text: `Attestation required: this is at or above the ${limit} threshold, so the payment is held in escrow until the receiving VASP releases it.`,
+        }
+      : {
+          tone: 'immediate' as const,
+          text: `Settles immediately: this is below the ${limit} threshold, so the beneficiary is paid in the same transaction.`,
+        }
+  })()
+
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [e.target.name]: e.target.value }))
 
-  const counterparties = vasps.filter(v => v.status === VaspStatus.Active && v.address !== address)
+  const registeredCounterparties = vasps.filter(v => v.status === VaspStatus.Active && v.address !== address)
+  const expiredCounterparties = registeredCounterparties.filter(
+    v => expiryState(v.expiresAt, clock.now).kind === 'expired',
+  )
+  const selectableCounterparties = registeredCounterparties.filter(
+    v => expiryState(v.expiresAt, clock.now).kind !== 'expired',
+  )
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -75,7 +175,10 @@ export default function NewPaymentPage() {
       return setFormError(err instanceof Error ? err.message : 'Invalid external reference')
     }
     const id = await tx.run('Payment submitted', s => submitPayment(s, { ...form, amount }))
-    if (id !== undefined) router.push(`/payments/view?id=${id}`)
+    if (id !== undefined) {
+      clearPaymentDraft(address)
+      router.push(`/payments/view?id=${id}`)
+    }
   }
 
   return (
@@ -106,9 +209,18 @@ export default function NewPaymentPage() {
           <Field label="To VASP">
             <select name="toVasp" value={form.toVasp} onChange={onChange} required className={inputCls}>
               <option value="">Select beneficiary VASP…</option>
-              {counterparties.map(v => (
+              {selectableCounterparties.map(v => (
                 <option key={v.address} value={v.address}>{v.name} ({v.jurisdiction})</option>
               ))}
+              {expiredCounterparties.length > 0 && (
+                <optgroup label="Unavailable - expired registration">
+                  {expiredCounterparties.map(v => (
+                    <option key={v.address} value={v.address} disabled>
+                      {v.name} ({v.jurisdiction}) - expired
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </Field>
           <Field label="Beneficiary address">
@@ -126,6 +238,11 @@ export default function NewPaymentPage() {
                 <input name="amount" inputMode="decimal" value={form.amount} onChange={onChange} placeholder="0.00" required
                   className={inputCls} />
               </Field>
+              {attestationPreview && (
+                <p data-testid="attestation-preview" className={`mt-2 text-sm ${PREVIEW_TONE[attestationPreview.tone]}`}>
+                  {attestationPreview.text}
+                </p>
+              )}
               {address && (
                 <p data-testid="balance" className="mt-2 text-sm text-muted-foreground">
                   {balanceError
@@ -163,6 +280,12 @@ export default function NewPaymentPage() {
 
 const inputCls =
   'w-full px-4 py-2 border border-border rounded bg-background focus:ring-2 focus:ring-primary focus:border-transparent'
+
+const PREVIEW_TONE = {
+  checking: 'text-muted-foreground',
+  required: 'text-orange-700',
+  immediate: 'text-green-700',
+} as const
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

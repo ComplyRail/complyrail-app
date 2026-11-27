@@ -3,7 +3,7 @@
 import { useCallback, useContext, useEffect, useState } from 'react'
 import * as api from './contract'
 import type { PaymentPage } from './contract'
-import { isContractConfigured } from './config'
+import { ASSETS, AssetOption, config, isContractConfigured, verifyAssetContracts } from './config'
 import { RoleContext } from './role-context'
 import type { Role } from './rbac'
 import type { AuditEvent, PaymentRecord, ThresholdRow, VaspEntry } from './types'
@@ -15,12 +15,60 @@ interface AsyncState<T> {
   reload: () => void
 }
 
+/**
+ * Query invalidation, keyed by query name.
+ *
+ * Every `useContractQuery` subscribes to its own key, so a write can refresh
+ * every mounted copy of the affected data — including components that are not
+ * the one that performed the write. Without this, a detail view would reload
+ * only itself and the payments list and its stat cards would stay stale until
+ * the user navigated or refreshed.
+ */
+type QueryListener = () => void
+
+const queryListeners = new Map<string, Set<QueryListener>>()
+
+/** Keys used by the payment queries; shared so writes and hooks cannot drift. */
+export const PAYMENTS_QUERY_KEY = 'payments'
+
+export function paymentQueryKey(paymentId: string): string {
+  return `payment:${paymentId}`
+}
+
+/** Refetch every mounted query whose key is listed. Unknown keys are ignored. */
+export function invalidateQueries(...keys: string[]): void {
+  for (const key of keys) {
+    const listeners = queryListeners.get(key)
+    if (!listeners) continue
+    // Copy first: a listener that unmounts while we iterate must not break the loop.
+    for (const listener of [...listeners]) listener()
+  }
+}
+
+/** Refresh every list and detail view a payment write affects. */
+export function invalidatePaymentQueries(paymentId: string): void {
+  invalidateQueries(PAYMENTS_QUERY_KEY, paymentQueryKey(paymentId))
+}
+
+function subscribeToQuery(key: string, listener: QueryListener): () => void {
+  const listeners = queryListeners.get(key) ?? new Set<QueryListener>()
+  listeners.add(listener)
+  queryListeners.set(key, listeners)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) queryListeners.delete(key)
+  }
+}
+
 /** Runs `fn` on mount and whenever `key` changes; exposes `reload` after writes. */
 function useContractQuery<T>(fn: () => Promise<T>, initial: T, key: string, enabled = true): AsyncState<T> {
   const [data, setData] = useState<T>(initial)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
+
+  // A write elsewhere invalidates this query by name; refetch in place.
+  useEffect(() => subscribeToQuery(key, () => setTick(t => t + 1)), [key])
 
   useEffect(() => {
     let cancelled = false
@@ -87,6 +135,31 @@ export function useLedgerClock(): LedgerClock {
   }
 }
 
+/**
+ * Verifies each configured asset contract exists on-chain once at startup.
+ * Returns a snapshot of the ASSETS array with `available` set for each entry.
+ * An asset with `available = false` should be hidden or disabled in the UI.
+ */
+export function useAssets(): { assets: AssetOption[]; loading: boolean } {
+  const [assets, setAssets] = useState<AssetOption[]>(ASSETS)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!isContractConfigured) {
+      setLoading(false)
+      return
+    }
+    verifyAssetContracts(config.rpcUrl, config.networkPassphrase)
+      .finally(() => {
+        // Re-snapshot the mutated ASSETS array so React re-renders.
+        setAssets([...ASSETS])
+        setLoading(false)
+      })
+  }, [])
+
+  return { assets, loading }
+}
+
 export function useVasps() {
   const q = useContractQuery<VaspEntry[]>(api.listVasps, [], 'vasps')
   return { vasps: q.data, loading: q.loading, error: q.error, reload: q.reload }
@@ -105,7 +178,7 @@ const EMPTY_PAGE: PaymentPage = { payments: [], nextCursor: 0, total: 0 }
 
 /** Newest-first payments, loaded one page at a time via `loadMore`. */
 export function usePayments() {
-  const first = useContractQuery<PaymentPage>(() => api.listPaymentsPage(), EMPTY_PAGE, 'payments')
+  const first = useContractQuery<PaymentPage>(() => api.listPaymentsPage(), EMPTY_PAGE, PAYMENTS_QUERY_KEY)
   const [more, setMore] = useState<PaymentRecord[]>([])
   const [cursor, setCursor] = useState<number | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -148,7 +221,11 @@ export function usePayments() {
 }
 
 export function usePayment(paymentId: string) {
-  const q = useContractQuery<PaymentRecord | null>(() => api.getPayment(paymentId), null, `payment:${paymentId}`)
+  const q = useContractQuery<PaymentRecord | null>(
+    () => api.getPayment(paymentId),
+    null,
+    paymentQueryKey(paymentId),
+  )
   return { payment: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
@@ -157,9 +234,32 @@ export function useThresholds() {
   return { thresholds: q.data, loading: q.loading, error: q.error, reload: q.reload }
 }
 
+/** Threshold for one asset/jurisdiction pair; `null` until it is known. */
+export function useThreshold(asset: string, jurisdiction?: string) {
+  const ready = !!asset && !!jurisdiction
+  const q = useContractQuery<bigint | null>(
+    () => (ready ? api.getThreshold(asset, jurisdiction) : Promise.resolve(null)),
+    null,
+    `threshold:${asset}:${jurisdiction ?? ''}`,
+    ready,
+  )
+  return { threshold: q.data, loading: q.loading, error: q.error }
+}
+
 export function useAuditEvents() {
   const q = useContractQuery<api.AuditEventsResult>(
-    api.listAuditEvents,
+    async () => {
+      const response = await fetch('/api/audit', { cache: 'no-store' })
+      const result = await response.json()
+      if (!response.ok) {
+        throw new Error(
+          result && typeof result === 'object' && 'error' in result
+            ? String(result.error)
+            : `Audit index request failed (${response.status})`,
+        )
+      }
+      return result as api.AuditEventsResult
+    },
     { events: [], truncated: false, window: { startLedger: 0, latestLedger: 0, since: 0, fallback: false } },
     'events',
   )

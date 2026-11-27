@@ -61,6 +61,7 @@ export type AuditEventType =
   | 'adm_acc'
   | 'pay_sub'
   | 'att_sub'
+  | 'att_amd'
   | 'pay_rel'
   | 'pay_rej'
   | 'pay_recl'

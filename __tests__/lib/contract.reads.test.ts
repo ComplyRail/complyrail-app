@@ -12,8 +12,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock('@/lib/config', async orig => ({ ...(await orig<object>()), isContractConfigured: true }))
 
-vi.mock('@stellar/stellar-sdk', async orig => {
-  const actual = await orig<typeof import('@stellar/stellar-sdk')>()
+vi.mock('@/packages/complyrail-client/src', () => {
   const fakeClient = {
     async list_vasps({ start, limit }: { start: number; limit: number }) {
       state.calls.push('list_vasps')
@@ -35,6 +34,10 @@ vi.mock('@stellar/stellar-sdk', async orig => {
           expires_at: null,
         },
       }))
+    },
+    async get_threshold({ asset, jurisdiction }: { asset: string; jurisdiction: string }) {
+      state.calls.push(`get_threshold:${asset}:${jurisdiction}`)
+      return { result: 500n }
     },
     async payment_count() {
       state.calls.push('payment_count')
@@ -66,10 +69,10 @@ vi.mock('@stellar/stellar-sdk', async orig => {
     state.inFlight--
     return make()
   }
-  return { ...actual, contract: { ...actual.contract, Client: { from: async () => fakeClient } } }
+  return { Client: function () { return fakeClient } }
 })
 
-import { listPayments, listVasps, RPC_CONCURRENCY } from '@/lib/contract'
+import { getThreshold, listPayments, listVasps, RPC_CONCURRENCY } from '@/lib/contract'
 
 beforeEach(() => {
   state.calls = []
@@ -98,6 +101,11 @@ describe('RPC read batching', () => {
     expect(state.calls.filter(c => c === 'list_vasps')).toHaveLength(3)
     expect(state.calls.filter(c => c === 'get_vasp')).toHaveLength(250)
     expect(state.maxInFlight).toBeLessThanOrEqual(RPC_CONCURRENCY)
+  })
+
+  it('getThreshold reads the rule for the selected asset and originator jurisdiction', async () => {
+    expect(await getThreshold('CASSET', 'US')).toBe(500n)
+    expect(state.calls).toEqual(['get_threshold:CASSET:US'])
   })
 
   it('listPayments fetches exactly one page of the requested size', async () => {

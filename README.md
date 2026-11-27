@@ -2,7 +2,7 @@
 
 Compliance dashboard for ComplyRail — manage VASP registry, configure thresholds, review pending payments, and export audit logs.
 
-**🚀 [Live Demo (testnet)](https://complyrail.github.io/complyrail-app/)** | [Deployment](./DEPLOYMENT.md) | [Contract docs](./contracts/README.md) | [On-chain privacy](./docs/privacy.md)
+**[Deployment](./DEPLOYMENT.md)** | [Contract docs](./contracts/README.md) | [On-chain privacy](./docs/privacy.md)
 
 ## Features
 
@@ -10,7 +10,7 @@ Compliance dashboard for ComplyRail — manage VASP registry, configure threshol
 - **VASP Directory**: Register, suspend, and view Virtual Asset Service Providers
 - **Threshold Config**: Set per-asset, per-jurisdiction compliance thresholds
 - **Payment Queue**: Escrowed payments with IVMS101 attestation, release, reject and reclaim
-- **Audit Log**: Live contract events from Stellar RPC, exportable as CSV/JSON with explorer links
+- **Audit Log**: Permanently indexed contract events, exportable as CSV/JSON with explorer links
 - **On-chain roles**: Admin, VASP and Viewer, derived from contract state
 
 ## Smart Contract
@@ -27,7 +27,7 @@ GitHub → **Actions** → **Deploy to testnet** → *Run workflow*, and paste y
 
 **Current testnet deployment:** [`CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q`](https://stellar.expert/explorer/testnet/contract/CA5T254NPONJHMOA6UWKRPKW2UI3IUOQ6TWUQGP2NFPLAZWOSCVYXS5Q)
 
-The dashboard is published to GitHub Pages on every push to `main` (`.github/workflows/pages.yml`).
+The dashboard is deployed to Vercel on every push to `main` (`.github/workflows/deploy-vercel.yml`). Its audit index is stored in Turso and updated daily by a Vercel Cron Job.
 
 **Demo data:** **Actions** → **Seed testnet demo data** runs a full flow on-chain: two demo VASPs, thresholds, an instant settlement, an attest + release, a rejection and a pending payment. It needs a `TESTNET_ADMIN_SECRET` repository secret (the admin's testnet key).
 
@@ -51,7 +51,7 @@ npm test -- --run    # unit tests
 npm run type-check && npm run lint
 ```
 
-Set `NEXT_PUBLIC_CONTRACT_ID` in `.env.local` to point at a different deployment.
+Set `NEXT_PUBLIC_CONTRACT_ID` in `.env.local` to point at a different deployment. For local audit indexing, also configure `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `CRON_SECRET`; deployment setup is in [DEPLOYMENT.md](./DEPLOYMENT.md).
 
 ## Tech Stack
 

@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { config } from '@/lib/config'
 import { clearClientCache, type Signer } from '@/lib/contract'
+import { assertSignedTransactionSource } from '@/lib/wallet'
 
 interface WalletState {
   address?: string
@@ -40,22 +41,52 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return StellarWalletsKit
   }, [])
 
-  // Restore a previous session.
+  // Restore a previous session, but only after the wallet confirms it still
+  // exposes the saved account. The saved address alone proves nothing: the
+  // wallet may have been switched, removed or locked since it was written.
   useEffect(() => {
+    let cancelled = false
     let saved: { walletId: string; address: string } | null = null
     try {
-      saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+      if (parsed && typeof parsed.walletId === 'string' && typeof parsed.address === 'string') {
+        saved = parsed
+      }
     } catch {
       /* storage unavailable */
     }
     if (!saved) return
+
+    const forgetSavedSession = () => {
+      try {
+        localStorage.removeItem(STORAGE_KEY)
+      } catch {
+        /* storage unavailable */
+      }
+    }
+
     loadKit()
-      .then(kit => {
+      .then(async kit => {
         kit.setWallet(saved!.walletId)
+        const current = await kit.fetchAddress()
+        if (cancelled) return
+        if (current.address !== saved!.address) {
+          forgetSavedSession()
+          setError('Your saved wallet session is out of date. Reconnect your wallet to continue.')
+          return
+        }
         setWalletId(saved!.walletId)
         setAddress(saved!.address)
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (cancelled) return
+        forgetSavedSession()
+        setError('Could not restore your wallet session. Reconnect your wallet to continue.')
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [loadKit])
 
   const connect = useCallback(async () => {
@@ -100,10 +131,21 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return {
       publicKey: address,
       walletId,
-      signTransaction: async (xdr: string) => {
-        const kit = await loadKit()
-        return kit.signTransaction(xdr, { networkPassphrase: config.networkPassphrase, address })
-      },
+     signTransaction: async (xdr: string) => {
+  const kit = await loadKit()
+  const result = await kit.signTransaction(xdr, {
+    networkPassphrase: config.networkPassphrase,
+    address,
+  })
+
+  assertSignedTransactionSource(
+    result.signedTxXdr,
+    address,
+    config.networkPassphrase,
+  )
+
+  return result
+},
     }
   }, [address, walletId, loadKit])
 

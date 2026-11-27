@@ -1,14 +1,17 @@
 'use client'
 
 import { useState } from 'react'
-import { useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
+import { invalidatePaymentQueries, useAdmin, useLedgerClock, usePayment, useVasp } from '@/lib/hooks'
 import { StatusBadge } from '@/components/StatusBadge'
 import { IvmsDecryptPanel } from './IvmsDecryptPanel'
 import { ClockWarning } from '@/components/ClockWarning'
 import { ExplorerLink, TxStatus, useTx } from '@/components/Notice'
+import { CopyableValue } from '@/components/CopyableValue'
 import { useWallet } from '@/components/WalletProvider'
 import { assetSymbol } from '@/lib/config'
 import { formatAddress, fromUnits } from '@/lib/format'
+import { CONTRACT_ERRORS } from '@/lib/errors'
+import { rejectBlockReason, releaseBlockReason } from '@/lib/payment-actions'
 import {
   buildIvmsPayload,
   canonicalJson,
@@ -19,16 +22,35 @@ import {
   submitAttestation,
 } from '@/lib/contract'
 import { sealIvmsPayload } from '@/lib/ivms-crypto'
-import { IVMS101_VERSION, PaymentStatus } from '@/lib/types'
-import { FIELD_LIMITS, lengthError } from '@/lib/limits'
+import { IVMS101_VERSION, PaymentStatus, VaspStatus } from '@/lib/types'
+import { expiryState } from '@/lib/vasp-expiry'
+import { FIELD_LIMITS } from '@/lib/limits'
 import { verifyIvmsPayload, type PayloadCheck } from '@/lib/ivms'
 
+/**
+ * Common rejection reasons. Operators pick one of these instead of free-typing
+ * a different wording every time; the input stays editable for anything else.
+ */
+export const REJECT_REASON_PRESETS = [
+  'Missing or invalid Travel Rule data',
+  'IVMS101 payload does not match the attested hash',
+  'Beneficiary details incomplete',
+  'Suspected sanctions match',
+  'Cancelled at the request of the originating VASP',
+] as const
+
 export function PaymentDetail({ id }: { id: string }) {
-  const { payment, loading, error, reload } = usePayment(id)
+  const { payment, loading, error } = usePayment(id)
   const clock = useLedgerClock()
   const fromVasp = useVasp(payment?.fromVasp || '')
   const toVasp = useVasp(payment?.toVasp || '')
   const { admin } = useAdmin()
+  const {
+    events: auditEvents,
+    truncated: auditEventsTruncated,
+    loading: auditEventsLoading,
+    error: auditEventsError,
+  } = useAuditEvents()
   const { address } = useWallet()
   const tx = useTx()
   const [names, setNames] = useState({ originator: '', originatorAccount: '', beneficiary: '' })
@@ -40,27 +62,72 @@ export function PaymentDetail({ id }: { id: string }) {
   const [overrideRelease, setOverrideRelease] = useState(false)
 
   if (loading) return <Shell><div className="text-center text-muted-foreground">Loading from contract…</div></Shell>
-  if (error || !payment) return <Shell><div className="text-center text-red-600">Payment #{id} not found</div></Shell>
+  if (error) {
+    return (
+      <Shell>
+        <div className="text-center py-12 space-y-4">
+          <p className="text-red-600">Failed to load payment: {error}</p>
+          <button
+            type="button"
+            onClick={reload}
+            className="px-4 py-2 rounded bg-primary text-primary-foreground hover:opacity-90"
+          >
+            Retry
+          </button>
+        </div>
+      </Shell>
+    )
+  }
+  if (!payment) return <Shell><div className="text-center text-red-600 py-12">Payment #{id} not found</div></Shell>
 
   const pending = payment.status === PaymentStatus.Pending
   const isOriginator = address === payment.fromVasp
   const canResolve = !!address && (address === payment.toVasp || address === admin)
-  const needsAttestation = payment.requiresAttestation && !payment.attestationHash
+  const attestationPending = payment.requiresAttestation && !payment.attestationHash
+  const verifyPayload = payment.requiresAttestation && !!payment.attestationHash
   const expired = clock.now >= payment.expiresAt
+  // The contract caps the reason in UTF-8 bytes, so counting characters would
+  // let multi-byte text through and the write would fail on-chain.
+  const reasonError = lengthError('Reason', reason, FIELD_LIMITS.reason)
 
   const checkReceived = async (json: string) => {
     setReceived(json)
     setReceivedCheck(json.trim() ? await verifyIvmsPayload(json, payment.attestationHash || '') : null)
   }
 
-  const releaseAllowed = !needsAttestation && (receivedCheck?.status === 'match' || overrideRelease)
+  const receivingVaspActive =
+    !toVasp.vasp ||
+    (toVasp.vasp.status === VaspStatus.Active &&
+      expiryState(toVasp.vasp.expiresAt, clock.now).kind !== 'expired')
+  const actionState = {
+    payment,
+    address,
+    admin,
+    now: clock.now,
+    receivingVaspActive,
+    received: receivedCheck,
+    override: overrideRelease,
+  }
+  const releaseReason = releaseBlockReason(actionState)
+  const rejectReason = rejectBlockReason(actionState, reason)
+
+  // Reasons are shown next to disabled controls rather than replacing them, so
+  // the user can tell a permission problem from a missing attestation and from
+  // a payment that is already resolved.
+  const blockedReason = (testId: string, text: string) => (
+    <p id={testId} data-testid={testId} className="text-xs text-muted-foreground">
+      {text}
+    </p>
+  )
 
   const act = async (label: string, fn: Parameters<typeof tx.run>[1]) => {
     const ok = await tx.run(label, async s => {
       await fn(s)
       return true
     })
-    if (ok) reload()
+    // Every write changes the payment and the queue it belongs to, so refresh
+    // both by key: this detail view, the payments list and its stat cards.
+    if (ok) invalidatePaymentQueries(payment.id)
   }
 
   const handleAttest = async (e: React.FormEvent) => {
@@ -119,24 +186,36 @@ export function PaymentDetail({ id }: { id: string }) {
         </Card>
         <Card title="Parties">
           <Row label="From VASP">
-            <ExplorerLink kind="account" id={payment.fromVasp}>{formatAddress(payment.fromVasp)}</ExplorerLink>
+            <CopyableValue value={payment.fromVasp} variant="address" label="Copy from VASP address">
+              <ExplorerLink kind="account" id={payment.fromVasp}>{formatAddress(payment.fromVasp)}</ExplorerLink>
+            </CopyableValue>
             {fromVasp.vasp && <span className="text-muted-foreground"> · {fromVasp.vasp.name} ({fromVasp.vasp.jurisdiction})</span>}
           </Row>
           <Row label="To VASP">
-            <ExplorerLink kind="account" id={payment.toVasp}>{formatAddress(payment.toVasp)}</ExplorerLink>
+            <CopyableValue value={payment.toVasp} variant="address" label="Copy to VASP address">
+              <ExplorerLink kind="account" id={payment.toVasp}>{formatAddress(payment.toVasp)}</ExplorerLink>
+            </CopyableValue>
             {toVasp.vasp && <span className="text-muted-foreground"> · {toVasp.vasp.name} ({toVasp.vasp.jurisdiction})</span>}
           </Row>
           <Row label="Beneficiary">
-            <ExplorerLink kind="account" id={payment.beneficiary}>{formatAddress(payment.beneficiary)}</ExplorerLink>
+            <CopyableValue value={payment.beneficiary} variant="address" label="Copy beneficiary address">
+              <ExplorerLink kind="account" id={payment.beneficiary}>{formatAddress(payment.beneficiary)}</ExplorerLink>
+            </CopyableValue>
           </Row>
         </Card>
       </div>
 
-      {payment.attestationHash && (
+      {(payment.attestationHash || attestationTimeline.length > 0) && (
         <Card title="Attestation">
-          <Row label="IVMS101 payload hash (sha256)"><span className="font-mono break-all">{payment.attestationHash}</span></Row>
+          <Row label="IVMS101 payload hash (sha256)">
+            <CopyableValue value={payment.attestationHash} label="Copy attestation hash" />
+          </Row>
           {payment.ivmsVersion && <Row label="Version">{payment.ivmsVersion}</Row>}
-          {payment.externalRef && <Row label="External ref"><code className="break-all">{payment.externalRef}</code></Row>}
+          {payment.externalRef && (
+            <Row label="External ref">
+              <CopyableValue value={payment.externalRef} label="Copy external reference" />
+            </Row>
+          )}
           {payment.attestedAt && <Row label="Submitted">{new Date(payment.attestedAt * 1000).toLocaleString()}</Row>}
         </Card>
       )}
@@ -145,7 +224,7 @@ export function PaymentDetail({ id }: { id: string }) {
 
       <div className="my-4"><TxStatus {...tx} /></div>
 
-      {pending && isOriginator && needsAttestation && (
+      {pending && isOriginator && attestationPending && (
         <form onSubmit={handleAttest} className="bg-card border border-border rounded-lg p-6 mb-6 space-y-4">
           <h2 className="text-lg font-semibold">Submit IVMS101 attestation</h2>
           <p className="text-sm text-muted-foreground">
@@ -153,15 +232,24 @@ export function PaymentDetail({ id }: { id: string }) {
             receiving VASP over your Travel Rule channel so they can verify it.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input required placeholder="Originator full name" value={names.originator}
-              onChange={e => setNames({ ...names, originator: e.target.value })}
-              className="px-3 py-2 border border-border rounded bg-background" />
-            <input required placeholder="Originator account (customer account number)" value={names.originatorAccount}
-              onChange={e => setNames({ ...names, originatorAccount: e.target.value })}
-              className="px-3 py-2 border border-border rounded bg-background" />
-            <input required placeholder="Beneficiary full name" value={names.beneficiary}
-              onChange={e => setNames({ ...names, beneficiary: e.target.value })}
-              className="px-3 py-2 border border-border rounded bg-background" />
+            <div className="space-y-1">
+              <label htmlFor="attestation-originator-name" className="block text-sm font-medium">Originator full name (required)</label>
+              <input id="attestation-originator-name" required placeholder="Full name" value={names.originator}
+                onChange={e => setNames({ ...names, originator: e.target.value })}
+                className="w-full px-3 py-2 border border-border rounded bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="attestation-originator-account" className="block text-sm font-medium">Originator account (customer account number, required)</label>
+              <input id="attestation-originator-account" required placeholder="Customer account number" value={names.originatorAccount}
+                onChange={e => setNames({ ...names, originatorAccount: e.target.value })}
+                className="w-full px-3 py-2 border border-border rounded bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="attestation-beneficiary-name" className="block text-sm font-medium">Beneficiary full name (required)</label>
+              <input id="attestation-beneficiary-name" required placeholder="Full name" value={names.beneficiary}
+                onChange={e => setNames({ ...names, beneficiary: e.target.value })}
+                className="w-full px-3 py-2 border border-border rounded bg-background" />
+            </div>
           </div>
           <button type="submit" disabled={tx.pending}
             className="w-full px-4 py-2 rounded bg-blue-600 text-white hover:opacity-90 disabled:opacity-50">
@@ -187,14 +275,16 @@ export function PaymentDetail({ id }: { id: string }) {
         <IvmsDecryptPanel recipientPublicKey={toVasp.vasp.publicKey} attestationHash={payment.attestationHash} />
       )}
 
-      {pending && canResolve && (
+      {pending && (
         <Card title="Resolve payment">
           <p className="text-sm text-muted-foreground mb-4">
-            {needsAttestation
-              ? 'Release is blocked until the originating VASP submits an attestation.'
-              : 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'}
+            {!canResolve
+              ? 'Release and reject are only available to the receiving VASP or the admin.'
+              : needsAttestation
+                ? 'Release is blocked until the originating VASP submits an attestation.'
+                : 'Check the IVMS101 payload you received matches the on-chain hash, then release or reject.'}
           </p>
-          {!needsAttestation && (
+          {canResolve && !needsAttestation && (
             <div className="space-y-2 mb-4">
               <label htmlFor="received-payload" className="block text-sm font-medium">Received IVMS101 payload (JSON)</label>
               <textarea id="received-payload" rows={6} value={received} placeholder="Paste the payload you received off-chain"
@@ -218,36 +308,42 @@ export function PaymentDetail({ id }: { id: string }) {
             </div>
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <button disabled={tx.pending || !releaseAllowed}
-              onClick={() => act('Payment released to beneficiary', s => releasePayment(s, payment.id))}
-              className="px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
-              Release to beneficiary
-            </button>
-            <div className="flex gap-2">
-              <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
-                maxLength={FIELD_LIMITS.reason}
-                className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm" />
-              <button disabled={tx.pending || !reason.trim() || !!lengthError('Reason', reason, FIELD_LIMITS.reason)}
-                onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
-                className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
-                Reject
+            <div className="space-y-1">
+              <button disabled={tx.pending || !!releaseReason}
+                aria-describedby={releaseReason ? 'release-reason' : undefined}
+                onClick={() => act('Payment released to beneficiary', s => releasePayment(s, payment.id))}
+                className="w-full px-4 py-2 rounded bg-green-600 text-white hover:opacity-90 disabled:opacity-50">
+                Release to beneficiary
               </button>
+              {releaseReason && blockedReason('release-reason', `Release unavailable: ${releaseReason}`)}
+            </div>
+            <div className="space-y-1">
+              <div className="flex gap-2">
+                <input placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)}
+                  maxLength={FIELD_LIMITS.reason} disabled={!canResolve}
+                  aria-describedby={rejectReason ? 'reject-reason' : undefined}
+                  className="flex-1 px-3 py-2 border border-border rounded bg-background text-sm disabled:opacity-50" />
+                <button disabled={tx.pending || !!rejectReason}
+                  onClick={() => act('Payment rejected and refunded', s => rejectPayment(s, payment.id, reason))}
+                  className="px-4 py-2 rounded bg-red-600 text-white hover:opacity-90 disabled:opacity-50">
+                  Reject
+                </button>
+              </div>
+              {rejectReason && blockedReason('reject-reason', `Reject unavailable: ${rejectReason}`)}
             </div>
           </div>
         </Card>
       )}
 
-      {pending && isOriginator && expired && (
-        <button disabled={tx.pending} onClick={() => act('Funds reclaimed', s => reclaimExpired(s, payment.id))}
-          className="w-full mt-4 px-4 py-3 rounded bg-muted hover:bg-muted/80 font-medium disabled:opacity-50">
-          Reclaim expired payment
-        </button>
-      )}
-
-      {pending && !isOriginator && !canResolve && (
-        <p className="text-sm text-muted-foreground">
-          Connect as the originating VASP to attest, or as the receiving VASP / admin to release or reject.
-        </p>
+      {pending && isOriginator && (
+        <div className="mt-4 space-y-1">
+          <button disabled={tx.pending || !expired} onClick={() => act('Funds reclaimed', s => reclaimExpired(s, payment.id))}
+            aria-describedby={expired ? undefined : 'reclaim-reason'}
+            className="w-full px-4 py-3 rounded bg-muted hover:bg-muted/80 font-medium disabled:opacity-50">
+            Reclaim expired payment
+          </button>
+          {!expired && blockedReason('reclaim-reason', `Reclaim unavailable: ${CONTRACT_ERRORS[12]}`)}
+        </div>
       )}
     </Shell>
   )

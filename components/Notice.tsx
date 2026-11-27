@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { explorerBase, isContractConfigured } from '@/lib/config'
 import { TxFailedError } from '@/lib/contract'
 import { useWallet } from '@/components/WalletProvider'
@@ -16,19 +16,37 @@ export function NotDeployedBanner() {
   )
 }
 
-/** Small helper for contract writes: tracks pending/error/success state. */
+/**
+ * Small helper for contract writes: tracks pending/error/success state and
+ * surfaces the simulated resource fee before the wallet approval dialog opens
+ * (issue #1013).
+ */
 export function useTx() {
   const { signer, connect } = useWallet()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
+  // Simulated resource fee in XLM, set just before the wallet sign dialog opens.
+  const [resourceFee, setResourceFee] = useState<string | null>(null)
+
+  // Listen for the fee event emitted by lib/contract.ts write() after simulation
+  // but before signAndSend(). The event carries { fee: '<xlm string>' }.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const fee = (e as CustomEvent<{ fee: string }>).detail?.fee ?? null
+      setResourceFee(fee)
+    }
+    window.addEventListener('complyrail:resourcefee', handler)
+    return () => window.removeEventListener('complyrail:resourcefee', handler)
+  }, [])
 
   const run = useCallback(
     async <T,>(label: string, fn: (s: NonNullable<typeof signer>) => Promise<T>): Promise<T | undefined> => {
       setError(null)
       setDone(null)
       setTxHash(null)
+      setResourceFee(null)
       if (!signer) {
         await connect()
         setError('Connect your wallet, then try again.')
@@ -49,12 +67,14 @@ export function useTx() {
         return undefined
       } finally {
         setPending(false)
+        // Keep the resource fee visible after the wallet returns so the user
+        // can see what was charged. It is cleared at the start of the next run.
       }
     },
     [signer, connect],
   )
 
-  return { run, pending, error, done, txHash, signedIn: !!signer }
+  return { run, pending, error, done, txHash, resourceFee, signedIn: !!signer }
 }
 
 export { friendlyError }
@@ -64,14 +84,32 @@ export function TxStatus({
   error,
   done,
   txHash,
+  resourceFee,
 }: {
   pending: boolean
   error: string | null
   done: string | null
   /** Set when a transaction failed on-chain, so the user can inspect it. */
   txHash?: string | null
+  /**
+   * Simulated resource fee in XLM, set after simulation and before the wallet
+   * approval dialog opens. Shown while pending so the user can see the fee
+   * they are approving (issue #1013).
+   */
+  resourceFee?: string | null
 }) {
-  if (pending) return <p className="text-sm text-muted-foreground">Waiting for wallet signature and confirmation…</p>
+  if (pending)
+    return (
+      <div className="text-sm text-muted-foreground space-y-1">
+        <p>Waiting for wallet signature and confirmation…</p>
+        {resourceFee && (
+          <p className="text-xs">
+            Estimated resource fee:{' '}
+            <span className="font-mono font-medium">{resourceFee} XLM</span>
+          </p>
+        )}
+      </div>
+    )
   if (error)
     return (
       <p className="text-sm text-red-600">
@@ -84,7 +122,18 @@ export function TxStatus({
         )}
       </p>
     )
-  if (done) return <p className="text-sm text-green-700">✓ {done}</p>
+  if (done)
+    return (
+      <div className="text-sm text-green-700 space-y-1">
+        <p>✓ {done}</p>
+        {resourceFee && (
+          <p className="text-xs text-muted-foreground">
+            Resource fee charged:{' '}
+            <span className="font-mono">{resourceFee} XLM</span>
+          </p>
+        )}
+      </div>
+    )
   return null
 }
 

@@ -1,10 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useWallet } from '@/components/WalletProvider'
+import { CopyableValue } from '@/components/CopyableValue'
 import { useRole } from '@/lib/hooks'
-import { formatAddress } from '@/lib/format'
 
 const NAV = [
   { href: '/vasps', label: 'VASPs' },
@@ -18,6 +18,27 @@ export function Header() {
   const { address, connecting, error, connect, disconnect } = useWallet()
   const { role } = useRole(address)
   const [open, setOpen] = useState(false)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const firstMenuLinkRef = useRef<HTMLAnchorElement>(null)
+
+  useEffect(() => {
+    if (open) {
+      firstMenuLinkRef.current?.focus()
+    }
+  }, [open])
+
+  const closeMenu = () => {
+    setOpen(false)
+    menuButtonRef.current?.focus()
+  }
+
+  const toggleMenu = () => {
+    if (open) {
+      closeMenu()
+    } else {
+      setOpen(true)
+    }
+  }
 
   return (
     <header className="border-b border-border bg-card">
@@ -43,8 +64,9 @@ export function Header() {
             </span>
             {address ? (
               <>
-                <div className="hidden sm:block px-3 py-2 bg-accent/10 rounded text-sm font-mono" title={address}>
-                  {formatAddress(address)} · {role === 'inactive-vasp' ? 'inactive VASP' : role}
+                <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-accent/10 rounded text-sm font-mono">
+                  <CopyableValue value={address} variant="address" label="Copy wallet address" />
+                  <span>· {role === 'inactive-vasp' ? 'inactive VASP' : role}</span>
                 </div>
                 <button onClick={disconnect} className="px-4 py-2 rounded border border-border hover:bg-muted text-sm">
                   Disconnect
@@ -59,15 +81,38 @@ export function Header() {
                 {connecting ? 'Connecting…' : 'Connect Wallet'}
               </button>
             )}
-            <button className="md:hidden px-2 py-1 border border-border rounded" onClick={() => setOpen(!open)} aria-label="Menu">
+            <button
+              ref={menuButtonRef}
+              type="button"
+              className="md:hidden px-2 py-1 border border-border rounded"
+              onClick={toggleMenu}
+              aria-label="Menu"
+              aria-expanded={open}
+              aria-controls="mobile-navigation"
+            >
               ☰
             </button>
           </div>
         </div>
         {open && (
-          <div className="md:hidden flex flex-col gap-3 pb-4">
-            {NAV.map(n => (
-              <Link key={n.href} href={n.href} className="text-sm font-medium" onClick={() => setOpen(false)}>
+          <div
+            id="mobile-navigation"
+            className="md:hidden flex flex-col gap-3 pb-4"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                closeMenu()
+              }
+            }}
+          >
+            {NAV.map((n, index) => (
+              <Link
+                key={n.href}
+                ref={index === 0 ? firstMenuLinkRef : undefined}
+                href={n.href}
+                className="text-sm font-medium"
+                onClick={closeMenu}
+              >
                 {n.label}
               </Link>
             ))}
