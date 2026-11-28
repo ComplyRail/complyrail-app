@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 const SAVED = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7'
@@ -12,6 +13,7 @@ const { kit, clearClientCache } = vi.hoisted(() => ({
     disconnect: vi.fn(),
     authModal: vi.fn(),
     signTransaction: vi.fn(),
+    getNetwork: vi.fn(),
     selectedModule: { productId: 'freighter' },
   },
   clearClientCache: vi.fn(),
@@ -35,9 +37,24 @@ function Probe() {
       <span data-testid="connecting">{String(connecting)}</span>
       <span data-testid="error">{error ?? 'none'}</span>
       <span data-testid="signer">{signer?.publicKey ?? 'none'}</span>
+      <SignProbe signer={signer} />
       <button onClick={connect}>Connect</button>
       <button onClick={disconnect}>Disconnect</button>
     </div>
+  )
+}
+
+function SignProbe({ signer }: { signer?: ReturnType<typeof useWallet>['signer'] }) {
+  const [signError, setSignError] = useState('none')
+  return (
+    <>
+      <span data-testid="sign-error">{signError}</span>
+      <button onClick={() => {
+        void signer?.signTransaction('unsigned-xdr').catch(error => {
+          setSignError(error instanceof Error ? error.message : String(error))
+        })
+      }}>Sign</button>
+    </>
   )
 }
 
@@ -59,6 +76,8 @@ describe('WalletProvider', () => {
     localStorage.clear()
     kit.fetchAddress.mockResolvedValue({ address: SAVED })
     kit.authModal.mockResolvedValue({ address: SAVED })
+    kit.getNetwork.mockResolvedValue({ network: 'Test SDF Network', networkPassphrase: 'Test SDF Network ; September 2015' })
+    kit.signTransaction.mockResolvedValue({ signedTxXdr: 'signed-xdr' })
     kit.disconnect.mockResolvedValue(undefined)
   })
 
@@ -171,6 +190,51 @@ describe('WalletProvider', () => {
       await waitFor(() => expect(screen.getByTestId('error').textContent).toMatch(/cancelled/i))
       expect(screen.getByTestId('connecting').textContent).toBe('false')
       expect(screen.getByTestId('address').textContent).toBe('none')
+    })
+  })
+
+  describe('transaction signing network validation', () => {
+    it('checks the wallet network before signing on the configured network', async () => {
+      saveSession()
+      renderProvider()
+      await waitFor(() => expect(screen.getByTestId('signer').textContent).toBe(SAVED))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Sign' }))
+
+      await waitFor(() => expect(kit.signTransaction).toHaveBeenCalledTimes(1))
+      expect(kit.getNetwork).toHaveBeenCalledTimes(1)
+      expect(kit.signTransaction).toHaveBeenCalledWith('unsigned-xdr', {
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        address: SAVED,
+      })
+      expect(screen.getByTestId('sign-error').textContent).toBe('none')
+    })
+
+    it('blocks signing when the wallet network passphrase does not match', async () => {
+      saveSession()
+      kit.getNetwork.mockResolvedValue({
+        network: 'Public',
+        networkPassphrase: 'Public Global Stellar Network ; September 2015',
+      })
+      renderProvider()
+      await waitFor(() => expect(screen.getByTestId('signer').textContent).toBe(SAVED))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Sign' }))
+
+      await waitFor(() => expect(screen.getByTestId('sign-error').textContent).toMatch(/network mismatch/i))
+      expect(kit.signTransaction).not.toHaveBeenCalled()
+    })
+
+    it('fails closed when the wallet cannot report its network', async () => {
+      saveSession()
+      kit.getNetwork.mockRejectedValue(new Error('getNetwork is unsupported'))
+      renderProvider()
+      await waitFor(() => expect(screen.getByTestId('signer').textContent).toBe(SAVED))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Sign' }))
+
+      await waitFor(() => expect(screen.getByTestId('sign-error').textContent).toMatch(/unable to verify the wallet network/i))
+      expect(kit.signTransaction).not.toHaveBeenCalled()
     })
   })
 

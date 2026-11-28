@@ -131,21 +131,37 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return {
       publicKey: address,
       walletId,
-     signTransaction: async (xdr: string) => {
-  const kit = await loadKit()
-  const result = await kit.signTransaction(xdr, {
-    networkPassphrase: config.networkPassphrase,
-    address,
-  })
+      signTransaction: async (xdr: string) => {
+        const kit = await loadKit()
+        let walletNetwork: { network: string; networkPassphrase: string }
 
-  assertSignedTransactionSource(
-    result.signedTxXdr,
-    address,
-    config.networkPassphrase,
-  )
+        try {
+          walletNetwork = await kit.getNetwork()
+        } catch {
+          throw new Error(
+            'Unable to verify the wallet network. Signing is blocked; reconnect with a wallet that exposes its current network.',
+          )
+        }
 
-  return result
-},
+        if (walletNetwork.networkPassphrase !== config.networkPassphrase) {
+          throw new Error(
+            `Wallet network mismatch: your wallet is connected to ${walletNetwork.network || 'a different network'}, but this app is configured for another Stellar network. Switch networks in your wallet before signing.`,
+          )
+        }
+
+        const result = await kit.signTransaction(xdr, {
+          networkPassphrase: config.networkPassphrase,
+          address,
+        })
+
+        assertSignedTransactionSource(
+          result.signedTxXdr,
+          address,
+          config.networkPassphrase,
+        )
+
+        return result
+      },
     }
   }, [address, walletId, loadKit])
 
